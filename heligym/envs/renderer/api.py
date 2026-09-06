@@ -6,6 +6,8 @@ import ctypes
 class Renderer(object):
     def __init__(self, w = 800, h = 600, title="heligym-renderer"):
         self.window = pyapi.create_window(w, h, title)
+        self._closed = False
+        self._terminated = False
         
         self.camera = self.get_camera()
 
@@ -13,25 +15,65 @@ class Renderer(object):
         """
             Render the `Renderer's` window.
         """
+        if self._closed or self._terminated:
+            return
+        if self.is_close():
+            self.close()
+            return
         pyapi.render(self.window)
+        if self.is_close():
+            self.close()
+
+    def wait_events(self):
+        """Keep a paused window responsive without redrawing it."""
+        if self._closed or self._terminated:
+            return
+        if not self.is_close():
+            pyapi.wait_events()
+        if self.is_close():
+            self.close()
 
     def close(self):
         """
             Close the `Renderer's` window.
         """
+        if self._closed or self._terminated:
+            return
+        self._closed = True
         pyapi.close(self.window)
+        # The native render function releases ImGui when the close flag is set.
+        # Enter that branch exactly once, while the OpenGL context still exists.
+        pyapi.render(self.window)
+
+    def set_control_bars(self, actions):
+        """Display the four signed actions on bars spanning [-1, 1]."""
+        if self._closed or self._terminated:
+            return
+        values = np.asarray(actions, dtype=np.float32)
+        if values.shape != (4,):
+            raise ValueError("Control bars require exactly four action values.")
+        pyapi.set_control_bars(self.window, np.clip(values, -1.0, 1.0))
+
+    def get_key_presses(self):
+        """Return key presses since the last call; held-key repeats are ignored."""
+        if self._closed or self._terminated:
+            return []
+        return pyapi.get_key_presses(self.window)
 
     def is_close(self):
         """
             Check whether the `Renderer's` window is closed or not.
         """
-        return pyapi.is_close(self.window)
+        return self._closed or self._terminated or pyapi.is_close(self.window)
     
     def terminate(self):
         """
             Terminate OpenGL.
         """
-        pyapi.terminate()
+        if not self._terminated:
+            self.close()
+            pyapi.terminate()
+            self._terminated = True
 
     def create_model(self, rel_path = None, 
                 vertex_shader_path = "/resources/shaders/vertex_base.vs", 

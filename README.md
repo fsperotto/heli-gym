@@ -71,22 +71,99 @@ For the user who has lower than the version of Ubuntu 16.04 (like Ubuntu 14.04 e
 please re-compile dependent libraries. Re-compile instruction can be found at [renderer page.](heligym/envs/renderer/README.md)
 
 -------------------------------------
+## __Project Structure__
+
+The repository is organised in layers: the Gymnasium-facing environments coordinate a reusable Python dynamics model, while rendering is isolated behind a Python API backed by a native C++/OpenGL library. Configuration and visual assets live next to the subsystem that consumes them, and tests mirror the behaviours they verify.
+
+```text
+heli-gym/
+├── heligym/
+│   ├── __init__.py                    # Public imports and Gymnasium environment registration
+│   └── envs/
+│       ├── __init__.py                # Environment package exports
+│       ├── helicopter.py              # Base Heli environment and simulation/render loop
+│       ├── helicopter_with_tasks.py   # Task-specific environments and reward functions
+│       ├── helis/
+│       │   └── aw109.yaml             # AW109 aircraft and environment parameters
+│       ├── dynamics/
+│       │   ├── __init__.py            # Dynamics package exports
+│       │   ├── dynamics.py            # Generic state containers and integration framework
+│       │   ├── helicopter_dynamics.py # Six-degree-of-freedom helicopter model
+│       │   ├── wind_dynamics.py       # Mean-wind and turbulence model
+│       │   ├── kinematic.py           # Rotation and coordinate-transform calculations
+│       │   ├── lookup.py              # One- and two-dimensional lookup-table interpolation
+│       │   └── utils.py               # Shared mathematical helpers
+│       └── renderer/
+│           ├── __init__.py            # Native-library and resource path setup
+│           ├── api.py                 # High-level Python Renderer interface
+│           ├── pyapi.py               # ctypes bindings to the native renderer
+│           ├── src/
+│           │   ├── camera.cpp/.h      # Camera position, orientation, and view transforms
+│           │   ├── gWindow.cpp/.h     # OpenGL window, input, scene, and GUI lifecycle
+│           │   ├── mesh.cpp/.h        # Drawable mesh data and texture handling
+│           │   ├── model.cpp/.h       # Assimp-based 3D model loading and drawing
+│           │   ├── py_api.cpp/.h      # C ABI exported for the Python bindings
+│           │   ├── shader.h           # GLSL shader compilation and uniform helpers
+│           │   └── glad.c             # Bundled OpenGL function loader implementation
+│           ├── resources/
+│           │   ├── models/            # Helicopter, sky, and terrain geometry/textures
+│           │   └── shaders/           # GLSL vertex and fragment shader programs
+│           ├── include/               # Bundled third-party C/C++ headers
+│           ├── libs/                  # Native runtime dependencies
+│           ├── bin/                   # Built Heligym shared libraries for Linux and Windows
+│           ├── cmake/                 # CMake modules locating Assimp, GLFW, GLM, and STB
+│           ├── CMakeLists.txt         # Native renderer build definition
+│           └── README.md              # Renderer build and troubleshooting guide
+├── tests/
+│   ├── test_keyboard_controls.py      # Keyboard and paused-loop unit tests
+│   ├── test_renderer_lifecycle.py     # Renderer shutdown and lifecycle unit tests
+│   └── test_native_keyboard.cpp       # Native keyboard-event integration test
+├── resources/ex.gif                   # Animation displayed in this README
+├── test.py                            # Interactive simulation/demo entry point
+├── pyproject.toml                     # Package metadata, dependencies, and included data
+├── uv.lock                            # Reproducible Python dependency lockfile
+├── setup_install.sh                   # Guided uv/virtual-environment installer
+├── init.sh                            # Convenience script for activating the local environment
+├── LICENSE                            # MIT licence
+└── README.md                          # Project overview and user documentation
+```
+
+This separation keeps reinforcement-learning tasks independent from the equations of motion: new tasks normally belong in `helicopter_with_tasks.py`, new aircraft are described under `helis/`, and changes to flight physics stay in `dynamics/`. Rendering remains a self-contained subsystem, and `api.py` shields environment code from the lower-level `ctypes` and C++ implementation. Generated caches and virtual environments are intentionally omitted from the tree above, while assets and bundled third-party dependencies are grouped rather than listing every generated or upstream file.
+
+-------------------------------------
 ## __Setup__
-Run following command.
+Install the package directly with pip:
+
 ```bash
 pip install -e .
 ```
 
+Alternatively, source the guided installation script. It uses `uv` to create a local `.venv` and install the package:
+
+```bash
+source setup_install.sh
+```
+
 -------------------------------------
 ## __Usage__
-Create environment by either,
+For a quick start after using the guided installer, activate its virtual environment and run the interactive example:
+
+```bash
+source init.sh
+python test.py
+```
+
+To use heli-gym in your own code, create an environment with either:
+
 ```python
 from heligym import HeliHover
 env = HeliHover()
 ```
-or
+
+or:
+
 ```python
-import gym
+import gymnasium as gym
 import heligym
 env = gym.make("HeliHover-v0")
 ```

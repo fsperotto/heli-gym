@@ -27,6 +27,15 @@ class HelicopterDynamics(DynamicSystem):
     n_obs = len(_observations)#int(17)
     n_act = int(4) 
     def __init__(self, params, dt):
+        """
+        Initialize the HelicopterDynamics class with helicopter parameters and environment parameters.
+        The helicopter parameters (params['HELI']) should include the main rotor (MR), tail rotor (TR), fuselage (FUS), horizontal tail (HT), vertical tail (VT), wing (WN), and landing gear (LG) parameters. 
+        The environment parameters (params['ENV']) should include gravity, air density, and other relevant environmental factors.        
+        Based on those given arguments, the constructor will precalculate parameters for the helicopter dynamics.
+        Args:
+            params (dict): A dictionary containing helicopter and environment parameters.
+            dt (float): The time step for the dynamics simulation.
+        """
         super(HelicopterDynamics, self).__init__(dt)
         self.HELI = params['HELI']
         self.ENV = params['ENV']
@@ -36,12 +45,14 @@ class HelicopterDynamics(DynamicSystem):
         self.__register_states()
         self.init_state = self.state
         self.init_state_dots = self.state_dots
+        #read heightmap and normal map
         hmap_img = imageio.imread(os.environ['HELIGYM_RESOURCE_DIR'] + self.ENV["HMAP_PATH"])
         hmap_img = hmap_img/np.iinfo(hmap_img.dtype).max
         normal_img = imageio.imread(os.environ['HELIGYM_RESOURCE_DIR'] + self.ENV["NMAP_PATH"])
         normal_img = normal_img/np.iinfo(normal_img.dtype).max
         self.terrain_hmap = hmap_img*self.ENV["MAX_GR_ALT"]
         self.terrain_normal = normal_img/np.sqrt((normal_img**2+EPS).sum(axis=-1, keepdims=True))
+        #conditions for trim() function, which is used to find the control inputs that will keep the helicopter in a steady state flight.
         self.default_trim_cond = {
             "yaw": 0.0,
             "yaw_rate": 0.0,
@@ -53,6 +64,10 @@ class HelicopterDynamics(DynamicSystem):
         }
 
     def __register_states(self):
+        """
+        Register the state variables for the helicopter dynamics in the state dictionary, 
+        which is used by the DynamicSystem class to manage the state of the system.
+        """
         self._register_state('vi_mr', np.zeros(1, dtype=np.float32))
         self._register_state('vi_tr', np.zeros(1, dtype=np.float32))
         self._register_state('psi_mr', np.zeros(1, dtype=np.float32))
@@ -64,6 +79,8 @@ class HelicopterDynamics(DynamicSystem):
         self._register_state('xyz', np.zeros(3, dtype=np.float32))
               
     def reset(self, trim_cond={}):
+        """
+        Reset the helicopter dynamics to the initial state and trim it based on the provided trim conditions."""
         self.state = self.init_state
         self.state_dots = self.init_state_dots
         input_trim_cond = copy.deepcopy(self.default_trim_cond)
@@ -78,35 +95,61 @@ class HelicopterDynamics(DynamicSystem):
 
     @property
     def MR(self):
+        """
+        Return the main rotor parameters.
+        """
         return self.HELI['MR']
 
     @property
     def TR(self):
+        """
+        Return the tail rotor parameters.
+        """
         return self.HELI['TR']
 
     @property
     def FUS(self):
+        """
+        Return the fuselage parameters.
+        """
         return self.HELI['FUS']
 
     @property
     def HT(self):
+        """
+        Return the horizontal tail parameters.
+        """
         return self.HELI['HT']
 
     @property
     def VT(self):
+        """
+        Return the vertical tail parameters.
+        """
         return self.HELI['VT'] 
 
     @property
     def WN(self):
+        """
+        Return the wing parameters.
+        """
         return self.HELI['WN']    
 
     @property
     def LG(self):
+        """
+        Return the landing gear parameters.
+        """
         return self.HELI['LG']  
     
     def __precalculations(self):
+        """
+        Precalculate some parameters for the helicopter dynamics.
+        This parameters are used in the dynamics calculations and are based on the helicopter parameters.
+        """
         # Component positions wrt CG locations
         # 1/12 comes from inch to feet conversion
+        # MR: Main Rotor, TR: Tail Rotor, FUS: Fuselage, HT: Horizontal Tail, VT: Vertical Tail, WN: Wing, LG: Landing Gear
         self.MR['H'] = (self.MR['WL']-self.HELI['WL_CG'])/12  # [ft]
         self.MR['D'] = (self.MR['FS']-self.HELI['FS_CG'])/12
         self.FUS['H'] = (self.FUS['WL']-self.HELI['WL_CG'])/12
@@ -154,17 +197,23 @@ class HelicopterDynamics(DynamicSystem):
         self.HELI['IINV'] = np.linalg.inv(self.HELI['I'])
 
     def set_wind(self, wind_ned: np.ndarray = np.zeros(3, np.float32)):
-        # wind velocity in earth frame:
+        """
+        Set the wind velocity in the earth frame (NED).
+        """
         self.WIND_NED = wind_ned
 
     def _altitude_to_air_properties(self, altitude):
-        """Calculate Air temperature and density from altitude.
+        """
+        Calculate Air temperature and density from altitude.
         """
         temp = self.ENV['T0'] - self.ENV['LAPSE']*altitude # [R] Temperature at the current altitude
         rho = self.ENV['RO_SEA']*(temp/self.ENV['T0'])**((self.ENV['GRAV']/(self.ENV['LAPSE']*self.ENV['R']))-1.0) # [slug/ft**3]
         return temp, rho
 
     def __get_ground_height_from_hmap(self):
+        """
+        Get the height of the ground from the heightmap at the current (x, y) position.
+        """
         x_ = self.ENV["NS_MAX"] / self.terrain_hmap.shape[0] # terrain x size per pixel
         y_ = self.ENV["EW_MAX"] / self.terrain_hmap.shape[1] # terrain y size per pixel
 
@@ -195,14 +244,19 @@ class HelicopterDynamics(DynamicSystem):
         return height
 
     def _does_hit_ground(self, altitude):
+        """Check if the helicopter is touching the ground."""
         return altitude - self.ground_touching_altitude() < 0.0
 
     def ground_touching_altitude(self):
+        """
+        Calculate the altitude to terrain, i.e. the distance between the helicopter and the ground.
+        It corresponds to the height of the ground at the current (x, y) position plus the distance from the helicopter's center of gravity to the ground.
+        """
         return self.__get_ground_height_from_hmap() + self.HELI['WL_CG']/12 # divide by 12 to make inch to feet
 
     def _calc_mr_fm(self, rho, coll, lon, lat, betas, uvw_air, pqr, vi_mr, psi_mr):
-        """Calculate Forces and Moments caused by Main Rotor
-        ans Main Rotor Dynamics
+        """
+        Calculate Forces and Moments caused by Main Rotor and Main Rotor Dynamics
         """
         ### Calculate required parameters first. 
         # one sixth the product(lock# and rotor ang.rate)
@@ -270,7 +324,8 @@ class HelicopterDynamics(DynamicSystem):
         return force_mr, moment_mr, power_mr, betas_dot, vi_mr_dot, psi_mr_dot
 
     def _calc_tr_fm(self, rho, pedal, uvw_air, pqr, vi_tr, psi_tr):
-        """Calculate Forces and Moments caused by Tail Rotor
+        """
+        Calculate Forces and Moments caused by Tail Rotor
         """
 
         ## TR Force Moments and inflow dynamics.
@@ -300,7 +355,8 @@ class HelicopterDynamics(DynamicSystem):
         return force_tr, moment_tr, power_tr, vi_tr_dot, psi_tr_dot
 
     def _calc_fus_fm(self, rho, uvw_air, vi_mr):
-        """Calculate Forces and Moments caused by Fuselage
+        """
+        Calculate Forces and Moments caused by Fuselage
         """
         wa_fus = uvw_air[2]-vi_mr[0] # Include rotor downwash on fuselage
         wa_fus += (wa_fus>0)*EPS # Make it nonzero!
@@ -320,7 +376,8 @@ class HelicopterDynamics(DynamicSystem):
         return force_fus, moment_fus, power_fus
 
     def _calc_ht_fm(self, rho, uvw_air, pqr, vi_mr):
-        """Calculate Forces and Moments caused by Horizontal Tail
+        """
+        Calculate Forces and Moments caused by Horizontal Tail
         """
         # downwash impinges on tail?
         v_dw = max([vi_mr[0]-uvw_air[2], EPS])
@@ -345,7 +402,8 @@ class HelicopterDynamics(DynamicSystem):
         return force_ht, moment_ht
 
     def _calc_vt_fm(self, rho, uvw_air, pqr, vi_tr):
-        """Calculate Forces and Moments caused by Vertical Tail
+        """
+        Calculate Forces and Moments caused by Vertical Tail
         """
         va_vt=uvw_air[1]+vi_tr[0]-self.VT['D']*pqr[2]
         if math.fabs(va_vt) > 0.3*math.fabs(uvw_air[0]):
@@ -361,7 +419,8 @@ class HelicopterDynamics(DynamicSystem):
         return force_vt, moment_vt
 
     def _calc_wn_fm(self, rho, uvw_air, vi_mr):
-        """Calculate Forces and Moments caused by Wing
+        """
+        Calculate Forces and Moments caused by Wing
         """
         ## Wing
         if self.WN["ZUW"]==0.0:
@@ -383,6 +442,9 @@ class HelicopterDynamics(DynamicSystem):
         return force_wn, moment_wn, power_wn
 
     def _calc_lg_fm(self, xyz, ned_vel, body2earth, pqr):
+        """
+        Calculate Forces and Moments caused by Landing Gear.
+        """
         force_lg = np.zeros_like(ned_vel)
         moment_lg = np.zeros_like(ned_vel)
         for i in range(len(self.LG['LOC'])):
@@ -398,6 +460,10 @@ class HelicopterDynamics(DynamicSystem):
         return force_lg, moment_lg
 
     def dynamics(self, state, set_observation=False):
+        """
+        This function calculates the dynamics of the helicopter given the current state and action.
+        It returns the state derivatives and updates the state dots.
+        """
         #
         state_dots = copy.deepcopy(self.state_dots)
         #

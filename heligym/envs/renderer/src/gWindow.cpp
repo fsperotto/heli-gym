@@ -61,6 +61,8 @@ Window::Window(const unsigned int SCR_WIDTH,
     glfwSetFramebufferSizeCallback(this->window, Window::static_framebuffer_size_callback);
     glfwSetCursorPosCallback(this->window, Window::static_mouse_callback);
     glfwSetScrollCallback(this->window, Window::static_scroll_callback);
+    // Install before ImGui so its backend chains our callback.
+    glfwSetKeyCallback(this->window, Window::static_key_callback);
 
     // Create gui.
     IMGUI_CHECKVERSION();
@@ -246,10 +248,101 @@ void Window::renderGUI()
         ImGui::End();
     }
 
+    if (this->show_control_bars)
+        this->render_control_bars();
+
     // Render the gui.
     ImGui::Render();
 }
 
+
+void Window::static_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    // Holding a key must not toggle pause repeatedly or change controls each frame.
+    if (action != GLFW_PRESS)
+        return;
+    Window* owner = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (key == GLFW_KEY_ESCAPE)
+    {
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+        return;
+    }
+    // Resolve letters using the user's keyboard layout (including AZERTY).
+    const char* name = glfwGetKeyName(key, scancode);
+    if (name && name[0] && name[1] == '\0')
+    {
+        key = name[0];
+        if (key >= 'a' && key <= 'z')
+            key -= 'a' - 'A';
+    }
+    switch (key)
+    {
+        case GLFW_KEY_P: case GLFW_KEY_R: case GLFW_KEY_X: case GLFW_KEY_Z: case GLFW_KEY_S:
+        case GLFW_KEY_Q: case GLFW_KEY_D:
+        case GLFW_KEY_UP: case GLFW_KEY_DOWN:
+        case GLFW_KEY_LEFT: case GLFW_KEY_RIGHT:
+            owner->key_presses.push_back(key);
+            break;
+        default: break;
+    }
+}
+
+void Window::render_control_bars()
+{
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float scale = display.x < 440.0f ? display.x / 440.0f : 1.0f;
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y - 15.0f),
+                            ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+    ImGui::SetNextWindowSize(ImVec2(410.0f * scale, 225.0f));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("Control positions", nullptr, flags))
+    {
+        ImGui::TextUnformatted("Control positions (-1.0 to +1.0)");
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const char* labels[4] = {"Collective", "Lon. cyclic", "Lat. cyclic", "Pedals"};
+        const ImU32 colors[4] = {IM_COL32(80, 185, 230, 255), IM_COL32(80, 210, 160, 255),
+                                IM_COL32(235, 180, 75, 255), IM_COL32(185, 140, 235, 255)};
+        for (int i = 0; i < 4; ++i)
+        {
+            const bool vertical = i < 2;
+            const float x = origin.x + (vertical ? i * 115.0f : 240.0f) * scale;
+            const float y = origin.y + (vertical ? 0.0f : (i - 2) * 75.0f);
+            draw->AddText(ImVec2(x, y), ImGui::GetColorU32(ImGuiCol_Text), labels[i]);
+            const ImVec2 lo(x, y + 20.0f);
+            const float length = 140.0f * scale;
+            const float thickness = 26.0f * scale;
+            const ImVec2 hi(x + (vertical ? thickness : length),
+                            lo.y + (vertical ? length : thickness));
+            const float value = control_values[i];
+            const float signed_value = value >= -1.0f ? (value <= 1.0f ? value : 1.0f) : -1.0f;
+            const ImVec2 center((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+            draw->AddRectFilled(lo, hi, ImGui::GetColorU32(ImGuiCol_FrameBg));
+            // Fill outward from zero: positive goes up/right, negative down/left.
+            if (signed_value != 0.0f)
+            {
+                const float offset = signed_value * length * 0.5f;
+                const ImVec2 filled_lo(vertical ? lo.x : center.x + (offset < 0.0f ? offset : 0.0f),
+                                       vertical ? center.y - (offset > 0.0f ? offset : 0.0f) : lo.y);
+                const ImVec2 filled_hi(vertical ? hi.x : center.x + (offset > 0.0f ? offset : 0.0f),
+                                       vertical ? center.y - (offset < 0.0f ? offset : 0.0f) : hi.y);
+                draw->AddRectFilled(filled_lo, filled_hi, colors[i]);
+            }
+            draw->AddRect(lo, hi, ImGui::GetColorU32(ImGuiCol_Border));
+            draw->AddLine(vertical ? ImVec2(lo.x, center.y) : ImVec2(center.x, lo.y),
+                          vertical ? ImVec2(hi.x, center.y) : ImVec2(center.x, hi.y),
+                          ImGui::GetColorU32(ImGuiCol_Text), 2.0f);
+            char value_text[16];
+            snprintf(value_text, sizeof(value_text), "%+.3f", signed_value);
+            draw->AddText(ImVec2(x, hi.y + 4.0f), ImGui::GetColorU32(ImGuiCol_Text), value_text);
+        }
+        ImGui::Dummy(ImVec2(0.0f, 185.0f));
+    }
+    ImGui::End();
+}
 
 void Window::framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {

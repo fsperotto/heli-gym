@@ -41,6 +41,40 @@ def render(window):
     """
     lib.render(window)
 
+
+def set_control_bars(window, values):
+    """Copy four signed control values to the native renderer."""
+    try:
+        setter = lib.set_control_bars
+    except AttributeError as exc:
+        raise RuntimeError("Rebuild the native renderer to enable control bars.") from exc
+    setter.argtypes = [ctypes.c_void_p] + [ctypes.c_float] * 4
+    setter.restype = None
+    setter(window, *values)
+
+
+def wait_events():
+    """Wait briefly for window events without drawing or swapping buffers."""
+    lib.wait_events.argtypes = []
+    lib.wait_events.restype = None
+    lib.wait_events()
+
+
+def get_key_presses(window):
+    """Drain ordered key presses collected during rendering."""
+    pop = lib.pop_key_press
+    pop.argtypes = [ctypes.c_void_p]
+    pop.restype = ctypes.c_int
+    names = {80: 'p', 82: 'r', 88: 'x', 90: 'z', 83: 's', 81: 'q', 68: 'd',
+             265: 'up', 264: 'down', 263: 'left', 262: 'right'}
+    keys = []
+    while True:
+        key = pop(window)
+        if key == -1:
+            return keys
+        if key in names:
+            keys.append(names[key])
+
 ###################################################################################
 lib.close.argtypes = [ctypes.c_void_p]
 lib.close.restype = ctypes.c_void_p
@@ -279,4 +313,3 @@ def rotate_TR(model, x, y, z):
         Rotate the model Tail Rotor with each angle which are in radians.
     """
     lib.rotate_TR(model, x, y, z)
-

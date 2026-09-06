@@ -32,7 +32,7 @@ class Heli(gym.Env, EzPickle):
     }
     # Default maximum time for an episode
     default_max_time = 40.0
-    # Default trim condition, ground trim.
+    # Default trim condition (steady-state / equilibrium), ground trim.
     default_trim_cond = {
         "yaw": 0.0,
         "yaw_rate": 0.0,
@@ -84,6 +84,7 @@ class Heli(gym.Env, EzPickle):
         self.renderer.add_permanent_object_to_window(self.sky)
 
         self._bGuiText = False
+        self.paused = False
        
     # Setter functions for RL tasks
     def set_max_time(self, max_time=None):
@@ -131,17 +132,79 @@ class Heli(gym.Env, EzPickle):
         self.guiINFO_text.append("E_POS      : %5.2f ft")
         self.guiINFO_text.append("ALT        : %5.2f ft")
         self.guiINFO_text.append("GR_ALT     : %5.2f ft")
+        self.guiACTION_ID = self.renderer.create_guiText("Actions", 300.0, 30.0, 250.0, 0.0)
+        self.guiACTION_text = [
+            "COLLECTIVE : %6.3f",
+            "LON_CYCLIC : %6.3f",
+            "LAT_CYCLIC : %6.3f",
+            "PEDAL      : %6.3f",
+        ]
+        self.guiCOMMAND_ID = self.renderer.create_guiText("Command Instructions", 570.0, 30.0, 360.0, 0.0)
+        self.guiCOMMAND_text = [
+            "P          : Pause / resume",
+            "R          : Reset and restart",
+            "X          : Set all controls to zero",
+            "Esc        : Stop and close window",
+            "Up / Down  : Lon. cyclic +0.2 / -0.2",
+            "Right/Left : Lat. cyclic +0.2 / -0.2",
+            "Z / S      : Collective  +0.2 / -0.2",
+            "D / Q      : Pedals      +0.2 / -0.2",
+            "Controls are clipped to [-1, +1]",
+            "One change per key press",
+        ]
 
     def __add_to_guiText(self):
         info_val = np.array(self.renderer.get_fps())
         info_val = np.append(info_val, self.heli_dyn.observation)
         self.renderer.add_guiText(self.guiINFO_ID, self.guiINFO_text, info_val) 
+        self.renderer.add_guiText(self.guiACTION_ID, self.guiACTION_text, self.heli_dyn.action)
+        self.renderer.add_guiText(self.guiCOMMAND_ID, self.guiCOMMAND_text,
+                                  np.zeros(len(self.guiCOMMAND_text)))
+
+    def process_keyboard(self, actions=None, update_action=False):
+        """Update manual controls; callers skip step() while paused, but keep rendering."""
+        if actions is None:
+            #actions = np.array(self.heli_dyn.action, dtype=np.float32, copy=True)
+            actions = self.heli_dyn.action
+        #actions = np.array(actions, dtype=np.float32, copy=True)
+        delta = np.zeros(self.heli_dyn.n_act, dtype=np.float32)
+        changes = {
+            'z': (0, 0.2), 's': (0, -0.2),
+            'up': (1, 0.2), 'down': (1, -0.2),
+            'right': (2, 0.2), 'left': (2, -0.2),
+            'd': (3, 0.2), 'q': (3, -0.2),
+        }
+        for key in self.renderer.get_key_presses():
+            if key == 'p':
+                self.paused = not self.paused
+            elif key == 'r':
+                self.reset()
+                #actions = np.array(self.heli_dyn.action, dtype=np.float32, copy=True)
+            elif key == 'x':
+                delta = -np.array(actions, dtype=np.float32, copy=True)
+                #actions.fill(0.0)
+            elif key in changes:
+                index, v = changes[key]
+                delta[index] = v
+                #actions[index] = np.clip(actions[index] + v, -1.0, 1.0)
+        # Update the action displays even when physics is paused.
+        if update_action:
+            self.heli_dyn.action = np.clip(actions + delta, -1.0, 1.0)
+        return delta
 
     def render(self):
+        if self.renderer.is_close():
+            self.renderer.close()
+            return
+        if self.paused:
+            self.renderer.wait_events()
+            return
         info_val = np.array(self.renderer.get_fps())
         info_val = np.append(info_val, self.heli_dyn.observation)
         
         self.renderer.set_guiText(self.guiINFO_ID, self.guiINFO_text, info_val)
+        self.renderer.set_guiText(self.guiACTION_ID, self.guiACTION_text, self.heli_dyn.action)
+        self.renderer.set_control_bars(self.heli_dyn.action)
         
         self.renderer.rotate_MR(self.heli_obj, 
                                 self.heli_dyn.state['betas'][1],
@@ -206,6 +269,7 @@ class Heli(gym.Env, EzPickle):
         return np.copy(observation), reward, done, truncated, info
 
     def reset(self):
+        self.paused = False
         self.time_counter = 0
         self.successed_time = 0
         self.wind_dyn.reset()

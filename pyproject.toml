@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heligym"
+version = "0.0.1"
+description = "A GYM environment package for reinforcement learning for helicopter flight tasks using minimum complexity helicopter model."
+readme = "README.md"
+requires-python = ">=3.7"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Uğurcan Özalp"},
+    {name = "Mehmet Gökçay Kabataş"},
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy",
+    "gymnasium",
+    "pyyaml",
+    "imageio",
+]
+
+[project.urls]
+Homepage = "https://github.com/ugurcanozalp/heli-gym"
+
+[tool.setuptools.packages.find]
+include = ["heligym", "heligym.*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+heligym = [
+    "envs/helis/*.yaml",
+    "envs/renderer/bin/*.dll",
+    "envs/renderer/bin/*.so",
+    "envs/renderer/libs/*",
+    "envs/renderer/resources/**/*",
+]

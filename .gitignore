@@ -129,4 +129,21 @@ dmypy.json
 .idea
 imgui.ini
 
+# Native renderer outputs (Heligym, GLAD, and ImGui are built by CMake).
+/heligym/envs/renderer/bin/
+/heligym/envs/renderer/libs/GLAD.*
+/heligym/envs/renderer/libs/libGLAD.*
+/heligym/envs/renderer/libs/imgui.*
+/heligym/envs/renderer/libs/libimgui.*
+
+# CMake files generated when configuring directly in the renderer directory.
+/heligym/envs/renderer/CMakeFiles/
+/heligym/envs/renderer/CMakeCache.txt
+/heligym/envs/renderer/cmake_install.cmake
+/heligym/envs/renderer/Makefile
+/heligym/envs/renderer/build.ninja
+/heligym/envs/renderer/.ninja_deps
+/heligym/envs/renderer/.ninja_log
+/heligym/envs/renderer/compile_commands.json
+
 heligym/envs/renderer/libs/libassimp*

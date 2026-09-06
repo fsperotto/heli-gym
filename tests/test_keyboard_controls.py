@@ -1,0 +1,145 @@
+"""Manual controls and the simulation loop, without a graphics window."""
+import importlib.util
+from pathlib import Path
+import runpy
+import sys
+from types import ModuleType, SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+import gymnasium
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class KeyboardControlsTests(unittest.TestCase):
+    def setUp(self):
+        package = ModuleType('_keyboard_test')
+        package.__path__ = []
+        dynamics = ModuleType('_keyboard_test.dynamics')
+        dynamics.HelicopterDynamics = Mock()
+        dynamics.WindDynamics = Mock()
+        renderer = ModuleType('_keyboard_test.renderer.api')
+        renderer.Renderer = Mock()
+        spec = importlib.util.spec_from_file_location(
+            '_keyboard_test.helicopter', ROOT / 'heligym/envs/helicopter.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {'_keyboard_test': package,
+                                     '_keyboard_test.dynamics': dynamics,
+                                     '_keyboard_test.renderer.api': renderer}):
+            spec.loader.exec_module(module)
+        self.env = module.Heli.__new__(module.Heli)
+        self.env.paused = False
+        self.env.heli_dyn = SimpleNamespace(action=np.zeros(4))
+        self.env.renderer = Mock()
+
+    def test_all_controls_change_the_correct_action(self):
+        for key, index, delta in [('z', 0, .2), ('s', 0, -.2),
+                                  ('up', 1, .2), ('down', 1, -.2),
+                                  ('right', 2, .2), ('left', 2, -.2),
+                                  ('d', 3, .2), ('q', 3, -.2)]:
+            with self.subTest(key=key):
+                self.env.renderer.get_key_presses.return_value = [key]
+                original = np.zeros(4)
+                result = self.env.process_keyboard(original)
+                expected = np.zeros(4)
+                expected[index] = delta
+                np.testing.assert_allclose(result, expected)
+                np.testing.assert_array_equal(original, np.zeros(4))
+                np.testing.assert_array_equal(self.env.heli_dyn.action, result)
+
+    def test_zero_controls_preserves_pause_and_event_order(self):
+        for paused in (False, True):
+            with self.subTest(paused=paused):
+                self.env.paused = paused
+                self.env.renderer.get_key_presses.return_value = ['x']
+                actions = self.env.process_keyboard([.5, -.8, 1, -.2])
+                np.testing.assert_array_equal(actions, np.zeros(4))
+                np.testing.assert_array_equal(self.env.heli_dyn.action, actions)
+                self.assertEqual(self.env.paused, paused)
+        self.env.renderer.get_key_presses.return_value = ['z', 'x', 'right']
+        actions = self.env.process_keyboard(np.ones(4))
+        np.testing.assert_allclose(actions, [0, 0, .2, 0])
+
+    def test_clipping_and_event_order(self):
+        self.env.renderer.get_key_presses.return_value = ['z', 'up', 'right', 'd'] * 20
+        np.testing.assert_array_equal(self.env.process_keyboard(np.zeros(4)), np.ones(4))
+        self.env.renderer.get_key_presses.return_value = ['s', 'down', 'left', 'q'] * 20
+        np.testing.assert_array_equal(self.env.process_keyboard(np.zeros(4)), -np.ones(4))
+        self.env.renderer.get_key_presses.return_value = ['up', 'down']
+        result = self.env.process_keyboard(np.ones(4))
+        self.assertAlmostEqual(result[1], .8)
+
+    def test_pause_and_resume_and_control_changes_while_paused(self):
+        self.env.renderer.get_key_presses.return_value = ['p', 'q']
+        actions = self.env.process_keyboard(np.zeros(4))
+        self.assertTrue(self.env.paused)
+        self.assertAlmostEqual(actions[3], -.2)
+        self.env.renderer.get_key_presses.return_value = ['p']
+        np.testing.assert_array_equal(self.env.process_keyboard(actions), actions)
+        self.assertFalse(self.env.paused)
+
+    def test_paused_render_only_services_window_events(self):
+        self.env.paused = True
+        self.env.renderer.is_close.return_value = False
+        self.env.render()
+        self.assertEqual([call[0] for call in self.env.renderer.mock_calls],
+                         ['is_close', 'wait_events'])
+
+    def test_demo_keeps_servicing_window_but_skips_physics_while_paused(self):
+        trim_calls = []
+        class TrimDynamics:
+            def __init__(self):
+                self.action = np.zeros(4)
+                self.state = {'position': np.zeros(3)}
+
+            def trim(self, conditions):
+                trim_calls.append(conditions)
+                self.state['position'][:] = 100
+                self.action = np.array([.1, -.2, .3, -.4])
+
+        self.env.heli_dyn = TrimDynamics()
+        self.env.trim_cond = {'gr_alt': 100}
+        self.env.reset = Mock()
+        self.env.step = Mock(return_value=(None, 0, False, False, {}))
+        self.env.close = Mock()
+        self.env.render = Mock()
+        self.env.renderer.is_close.side_effect = lambda: self.env.render.call_count >= 5
+        self.env.renderer.get_key_presses.side_effect = [[], ['p'], ['z'], ['p'], []]
+        heligym = ModuleType('heligym')
+        heligym.HeliHover = Mock(return_value=self.env)
+        with patch.dict(sys.modules, {'heligym': heligym}):
+            runpy.run_path(str(ROOT / 'test.py'), run_name='__main__')
+        self.assertEqual(self.env.render.call_count, 5)
+        self.assertEqual(self.env.step.call_count, 3)
+        self.env.close.assert_called_once()
+        self.assertEqual(trim_calls, [self.env.trim_cond] * 3)
+        for call in self.env.step.call_args_list:
+            np.testing.assert_array_equal(call.args[0], [.1, -.2, .3, -.4])
+        np.testing.assert_array_equal(self.env.heli_dyn.state['position'], np.zeros(3))
+
+    def test_restart_resets_dynamics_timers_and_restores_trim_controls(self):
+        self.env.paused = True
+        self.env.time_counter = 10
+        self.env.successed_time = 5
+        self.env.wind_dyn = Mock()
+        self.env.trim_cond = {'gr_alt': 100}
+        self.env._bGuiText = True
+        self.env._get_info = Mock(return_value={})
+        self.env.heli_dyn.observation = np.zeros(17)
+        trimmed = np.array([.1, -.2, .3, -.4], dtype=np.float32)
+        self.env.heli_dyn.reset = Mock(side_effect=lambda _: setattr(
+            self.env.heli_dyn, 'action', trimmed.copy()))
+        self.env.renderer.get_key_presses.return_value = ['z', 'r', 'up']
+        actions = self.env.process_keyboard(np.ones(4))
+        self.assertFalse(self.env.paused)
+        self.assertEqual(self.env.time_counter, 0)
+        self.assertEqual(self.env.successed_time, 0)
+        self.env.wind_dyn.reset.assert_called_once()
+        self.env.heli_dyn.reset.assert_called_once_with(self.env.trim_cond)
+        np.testing.assert_allclose(actions, [.1, 0, .3, -.4], atol=1e-7)
+
+
+if __name__ == '__main__':
+    unittest.main()

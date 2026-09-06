@@ -10,7 +10,6 @@ in float d;
 uniform sampler2D texture_diffuse;
 
 uniform float opacity;
-uniform vec3 camPos;
 
 struct Light {
     vec4 position;

@@ -27,6 +27,12 @@ extern "C" RENDERER_API bool is_close(Window* window);
 // Render the window.
 extern "C" RENDERER_API void render(Window* window);
 
+extern "C" RENDERER_API void set_control_bars(Window* window, float collective, float longitudinal, float lateral, float pedals);
+
+extern "C" RENDERER_API int pop_key_press(Window* window);
+
+extern "C" RENDERER_API void wait_events();
+
 // Terminate the OpenGL.
 extern "C" RENDERER_API void terminate();
 

@@ -28,6 +28,28 @@ void render(Window* window)
 }
 
 
+void set_control_bars(Window* window, float collective, float longitudinal, float lateral, float pedals)
+{
+    const float values[4] = {collective, longitudinal, lateral, pedals};
+    for (int i = 0; i < 4; ++i)
+        window->control_values[i] = values[i];
+    window->show_control_bars = true;
+}
+
+int pop_key_press(Window* window)
+{
+    if (window->key_presses.empty())
+        return -1;
+    const int key = window->key_presses.front();
+    window->key_presses.pop_front();
+    return key;
+}
+
+void wait_events()
+{
+    glfwWaitEventsTimeout(0.05);
+}
+
 void terminate()
 {
 	glfwTerminate();

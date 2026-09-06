@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <thread>
+#include <deque>
 
 // Create basic structure for ImGui text. With this structure
 // text gui has only one values for a text. 
@@ -71,6 +72,10 @@ private:
     glm::mat4 projection_view = glm::mat4(1.0f);
 
 public:
+    // Press events are queued so quick taps and their order are preserved.
+    std::deque<int> key_presses;
+    static void static_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
+
     // Base window if GLFW.
     GLFWwindow* window;
 
@@ -96,6 +101,11 @@ public:
     
     // Render the Window.
     void render();
+
+    // Signed control positions copied from Python for the live HUD.
+    float control_values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    bool show_control_bars = false;
+    void render_control_bars();
 
     // Render the Dear ImGui.
     void renderGUI();

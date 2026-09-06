@@ -24,6 +24,7 @@ uniform mat4 inversedTransposedModel;
 
 void main()
 {
+    ocamPos = camPos;
     TexCoords = aTexCoords;    
     Normal = vec3(inversedTransposedModel * vec4(aNormal, 1.0f));  
 
