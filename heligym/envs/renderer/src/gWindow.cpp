@@ -126,7 +126,28 @@ void Window::render()
 {
     if (!glfwWindowShouldClose(this->window))
     {
-        // Clear window for new frame.
+        // Query the framebuffer every frame. This keeps the viewport correct
+        // across resize/maximize events and on high-DPI displays where window
+        // dimensions differ from framebuffer dimensions.
+        int framebuffer_width = 0;
+        int framebuffer_height = 0;
+        glfwGetFramebufferSize(this->window, &framebuffer_width, &framebuffer_height);
+        if (framebuffer_width <= 0 || framebuffer_height <= 0)
+        {
+            glfwPollEvents();
+            return;
+        }
+        this->SCR_WIDTH = static_cast<unsigned int>(framebuffer_width);
+        this->SCR_HEIGHT = static_cast<unsigned int>(framebuffer_height);
+        glViewport(0, 0, framebuffer_width, framebuffer_height);
+
+        // ImGui uses scissor rectangles. Explicitly reset clear-related state
+        // so newly exposed pixels are cleared after resize or maximize events.
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+
+        // Clear the complete framebuffer for the new frame.
         glClearColor(61.0f/255.0, 89.0f/255.0, 129.0f/255.0, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);                
        
@@ -277,6 +298,9 @@ void Window::static_key_callback(GLFWwindow* window, int key, int scancode, int 
     }
     switch (key)
     {
+        case GLFW_KEY_V:
+            owner->follow_helicopter_bearing = !owner->follow_helicopter_bearing;
+            break;
         case GLFW_KEY_P: case GLFW_KEY_R: case GLFW_KEY_X: case GLFW_KEY_Z: case GLFW_KEY_S:
         case GLFW_KEY_Q: case GLFW_KEY_D:
         case GLFW_KEY_UP: case GLFW_KEY_DOWN:
@@ -285,6 +309,28 @@ void Window::static_key_callback(GLFWwindow* window, int key, int scancode, int 
             break;
         default: break;
     }
+}
+
+void Window::update_helicopter_camera(float north, float east, float down, float bearing)
+{
+    // Convert the simulator's NED coordinates to OpenGL's X-up-Z frame.
+    const glm::vec3 helicopter(north, -down, east);
+    glm::vec3 position;
+    if (this->follow_helicopter_bearing)
+    {
+        const glm::vec3 heading(cos(bearing), 0.0f, sin(bearing));
+        position = helicopter - 30.0f * heading + glm::vec3(0.0f, 8.0f, 0.0f);
+    }
+    else
+    {
+        position = helicopter + glm::vec3(0.0f, 0.0f, 30.0f);
+    }
+
+    this->camera->Position = position;
+    const glm::vec3 front = glm::normalize(helicopter - position);
+    this->camera->Front = front;
+    this->camera->Right = glm::normalize(glm::cross(front, this->camera->WorldUp));
+    this->camera->Up = glm::normalize(glm::cross(this->camera->Right, front));
 }
 
 void Window::render_control_bars()
@@ -346,6 +392,10 @@ void Window::render_control_bars()
 
 void Window::framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {
+    if (width <= 0 || height <= 0)
+        return;
+    this->SCR_WIDTH = static_cast<unsigned int>(width);
+    this->SCR_HEIGHT = static_cast<unsigned int>(height);
     glViewport(0, 0, width, height);
 }
 

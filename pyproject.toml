@@ -27,6 +27,9 @@ dependencies = [
     "imageio",
 ]
 
+[project.optional-dependencies]
+train = ["stable-baselines3>=2.3,<3", "tensorboard", "matplotlib"]
+
 [project.urls]
 Homepage = "https://github.com/ugurcanozalp/heli-gym"
 
@@ -36,7 +39,9 @@ namespaces = false
 
 [tool.setuptools.package-data]
 heligym = [
-    "envs/helis/*.yaml",
+    "envs/config/helis/*.yaml",
+    "envs/config/terrains/*.yaml",
+    "envs/config/weather/*.yaml",
     "envs/renderer/bin/*.dll",
     "envs/renderer/bin/*.so",
     "envs/renderer/libs/*",

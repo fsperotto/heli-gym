@@ -1,0 +1,9 @@
+wind_direction: 45.0              # [deg]
+wind_speed: 20.0                  # [ft/s]
+turbulence_level: 1               # 1 (lightest) to 7 (strongest)
+gas_constant: 1716.49             # [ft lbf / (slug R)]
+sea_level_temperature: 518.4      # [R]
+temperature_lapse_rate: 0.0035662 # [R/ft]
+troposphere_height: 36089.0       # [ft]
+sea_level_air_density: 0.0023769  # [slug/ft^3]
+gravity: 32.2                     # [ft/s^2]

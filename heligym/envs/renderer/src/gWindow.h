@@ -79,8 +79,10 @@ public:
     // Base window if GLFW.
     GLFWwindow* window;
 
-    // Camera class. 
+    // Camera class.
     Camera* camera;
+    bool follow_helicopter_bearing = false;
+    void update_helicopter_camera(float north, float east, float down, float bearing);
 
     // FPS variables and dt which is in nanoseconds.
     float FPS = (float)1e-7;

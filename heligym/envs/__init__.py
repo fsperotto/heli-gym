@@ -1,2 +1,3 @@
 from .helicopter import Heli 
-from .helicopter_with_tasks import HeliHover, HeliForwardFlight 
+from .helicopter_with_tasks import HeliHover, HeliForwardFlight, HeliStabilize
+from .heli_render import HeliRender

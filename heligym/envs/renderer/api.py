@@ -60,6 +60,10 @@ class Renderer(object):
             return []
         return pyapi.get_key_presses(self.window)
 
+    def update_helicopter_camera(self, north, east, down, bearing):
+        """Track a NED helicopter pose in the currently selected camera mode."""
+        pyapi.update_helicopter_camera(self.window, north, east, down, bearing)
+
     def is_close(self):
         """
             Check whether the `Renderer's` window is closed or not.

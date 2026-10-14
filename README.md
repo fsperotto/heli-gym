@@ -3,6 +3,18 @@ OpenAI GYM environment for 6-DOF Helicopter simulation.
 
 This is GYM environment package for reinforcement learning for helicopter flight tasks using minimum complexity helicopter model.
 
+For a fresh Linux clone, install the native build dependencies first (Ubuntu/Debian):
+
+```bash
+sudo apt install build-essential cmake libglfw3-dev libassimp-dev libgl1-mesa-dev
+bash ./setup_install.sh
+source ./init.sh
+python test.py
+```
+
+`test.py` opens an OpenGL window, so it also requires a graphical session or
+working display forwarding.
+
 -------------------------------------
 ## __Environment Details__
 
@@ -10,6 +22,29 @@ This is GYM environment package for reinforcement learning for helicopter flight
 * Realistic Dynamic Model based on Minimum Complexity Helicopter Model ([Heffley and Mnich](https://robertheffley.com/docs/Sim_modeling/Heffley-Mnich--Minimum-Complexity%20Helicopter%20Simulation%20Math%20Model--NASA%20CR%20177476.pdf))
 In addition, inflow dynamics are added and model is adjusted so that it covers multiple flight conditions. 
 * Rendering is done by OpenGL.
+
+Aircraft, terrain, and weather defaults are stored independently under
+`heligym/envs/config/helis`, `heligym/envs/config/terrains`, and
+`heligym/envs/config/weather`.
+`Heli` accepts either bundled configuration names or YAML paths for the
+aircraft and terrain. Weather and atmospheric values are constructor arguments:
+
+```python
+env = heligym.Heli(
+    heli_name="aw109",
+    terrain_name="default_terrain",
+    wind_direction=45.0,       # degrees
+    wind_speed=20.0,           # ft/s
+    turbulence_level=1,
+    gravity=32.2,              # ft/s²
+    render_mode=None,
+)
+```
+
+The other physical arguments are `gas_constant`, `sea_level_temperature`,
+`temperature_lapse_rate`, `troposphere_height`, and
+`sea_level_air_density`. Their defaults are defined in
+`default_weather.yaml`.
 
 ![Caption](resources/ex.gif)
 
@@ -43,6 +78,14 @@ In addition, inflow dynamics are added and model is adjusted so that it covers m
 | 14  | y loc (earth)      | ft    | -∞    | ∞      |  
 | 15  | sea altitude       | ft    | 0     | ∞      |
 | 16  | ground altitude    | ft    | 0     | ∞      |
+| 17  | previous collective|       | -1    | 1      |
+| 18  | previous lon. cyclic|      | -1    | 1      |
+| 19  | previous lat. cyclic|      | -1    | 1      |
+| 20  | previous pedal     |       | -1    | 1      |
+
+At reset, the previous controls are the trim controls used to create the
+initial steady-flight state. After each step, they are the direct controls
+most recently supplied by the agent.
 -------------------------------------
 ## __Tasks__
 For now only one task is available. However, rewarding is not tested well yet.

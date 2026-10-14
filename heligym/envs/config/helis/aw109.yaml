@@ -1,20 +1,3 @@
-
-ENV:
-    R           : 1716.49  # [ft lbf / (slug R)] Speficif Gas Constant of Air
-    T0          : 518.4 # [R] Sea level temperature
-    LAPSE       : 0.0035662 # [R/ft] Temperature Lapse rate
-    HTS         : 36089. # [ft] Height of troposfer in ft   
-    RO_SEA      : 0.0023769 # [slug/ft^3] Air density at sea level
-    GRAV        : 32.2 # [ft/sec^2] Gravitional Acceleration
-    MAX_GR_ALT  : 8809.0551 # [ft] Maximum altitude of terrain map
-    NS_MAX      : 6561.6798 # [ft] Span of terrain in north-south axis
-    EW_MAX      : 6561.6798 # [ft] Span of terrain in east-west axis
-    WIND_DIR    : 45.0 # [deg] Wind direction 
-    WIND_SPD    : 20 # [ft/s] Wind speed
-    TURB_LVL    : 1 # Turbulence level 1-Lightest 7-strongest
-    HMAP_PATH   : "/models/terrain/terrain_hmap.png"
-    NMAP_PATH   : "/models/terrain/terrain_normal.png"
-
 HELI:
     HP_LOSS     : 90    # [hp] Accessory Power loss (probably)
     VTRANS      : 50    # [ft/s] Downwash transition speed

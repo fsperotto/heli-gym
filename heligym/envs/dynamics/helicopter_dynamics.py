@@ -26,31 +26,42 @@ class HelicopterDynamics(DynamicSystem):
 
     n_obs = len(_observations)#int(17)
     n_act = int(4) 
-    def __init__(self, params, dt):
+    def __init__(self, *, helicopter, dt, resource_dir, hmap_path, nmap_path,
+                 east_west_extent, north_south_extent,
+                 maximum_ground_altitude, gas_constant,
+                 sea_level_temperature, temperature_lapse_rate,
+                 troposphere_height, sea_level_air_density, gravity):
         """
-        Initialize the HelicopterDynamics class with helicopter parameters and environment parameters.
-        The helicopter parameters (params['HELI']) should include the main rotor (MR), tail rotor (TR), fuselage (FUS), horizontal tail (HT), vertical tail (VT), wing (WN), and landing gear (LG) parameters. 
-        The environment parameters (params['ENV']) should include gravity, air density, and other relevant environmental factors.        
-        Based on those given arguments, the constructor will precalculate parameters for the helicopter dynamics.
-        Args:
-            params (dict): A dictionary containing helicopter and environment parameters.
-            dt (float): The time step for the dynamics simulation.
+        Initialize helicopter physics from aircraft, terrain, and atmosphere values.
+
+        ``helicopter`` contains only aircraft-specific component data. Terrain
+        geometry and atmospheric constants are explicit so this class does not
+        depend on a mixed environment configuration dictionary.
         """
         super(HelicopterDynamics, self).__init__(dt)
-        self.HELI = params['HELI']
-        self.ENV = params['ENV']
+        self.HELI = copy.deepcopy(helicopter)
+        self.east_west_extent = east_west_extent
+        self.north_south_extent = north_south_extent
+        self.maximum_ground_altitude = maximum_ground_altitude
+        self.gas_constant = gas_constant
+        self.sea_level_temperature = sea_level_temperature
+        self.temperature_lapse_rate = temperature_lapse_rate
+        self.troposphere_height = troposphere_height
+        self.sea_level_air_density = sea_level_air_density
+        self.gravity = gravity
         # Null state dots, since it is not updated.
         self.__precalculations()
         self.set_wind() # wind velocity in earth frame:
         self.__register_states()
-        self.init_state = self.state
-        self.init_state_dots = self.state_dots
+        # Reset templates must never share storage with live integration state.
+        self.init_state = copy.deepcopy(self.state)
+        self.init_state_dots = copy.deepcopy(self.state_dots)
         #read heightmap and normal map
-        hmap_img = imageio.imread(os.environ['HELIGYM_RESOURCE_DIR'] + self.ENV["HMAP_PATH"])
+        hmap_img = imageio.imread(os.path.join(resource_dir, hmap_path.lstrip("/")))
         hmap_img = hmap_img/np.iinfo(hmap_img.dtype).max
-        normal_img = imageio.imread(os.environ['HELIGYM_RESOURCE_DIR'] + self.ENV["NMAP_PATH"])
+        normal_img = imageio.imread(os.path.join(resource_dir, nmap_path.lstrip("/")))
         normal_img = normal_img/np.iinfo(normal_img.dtype).max
-        self.terrain_hmap = hmap_img*self.ENV["MAX_GR_ALT"]
+        self.terrain_hmap = hmap_img*self.maximum_ground_altitude
         self.terrain_normal = normal_img/np.sqrt((normal_img**2+EPS).sum(axis=-1, keepdims=True))
         #conditions for trim() function, which is used to find the control inputs that will keep the helicopter in a steady state flight.
         self.default_trim_cond = {
@@ -81,8 +92,8 @@ class HelicopterDynamics(DynamicSystem):
     def reset(self, trim_cond={}):
         """
         Reset the helicopter dynamics to the initial state and trim it based on the provided trim conditions."""
-        self.state = self.init_state
-        self.state_dots = self.init_state_dots
+        self.state = copy.deepcopy(self.init_state)
+        self.state_dots = copy.deepcopy(self.init_state_dots)
         input_trim_cond = copy.deepcopy(self.default_trim_cond)
         input_trim_cond.update(trim_cond)
         self.trim(input_trim_cond)
@@ -168,7 +179,7 @@ class HelicopterDynamics(DynamicSystem):
         self.LG['L_LOC'] = - np.array([self.LG['FS_MN']-self.HELI['FS_CG'], self.LG['BL_MN'], self.LG['WL']-self.HELI['WL_CG']], dtype=np.float32) / 12
         self.LG['LOC'] = np.stack([self.LG['N_LOC'], self.LG['R_LOC'], self.LG['L_LOC']], axis=0)
         #
-        self.HELI['M']=self.HELI['WT']/self.ENV['GRAV'] # [slug] vehicle mass
+        self.HELI['M']=self.HELI['WT']/self.gravity # [slug] vehicle mass
         # Main Rotor precalculations
         self.MR['OMEGA'] = self.MR['RPM']*2*math.pi/60 # [rad/s] MR rev speed
         self.MR['V_TIP'] = self.MR['R']*self.MR['OMEGA'] # [ft/s] MR tip speed
@@ -206,16 +217,17 @@ class HelicopterDynamics(DynamicSystem):
         """
         Calculate Air temperature and density from altitude.
         """
-        temp = self.ENV['T0'] - self.ENV['LAPSE']*altitude # [R] Temperature at the current altitude
-        rho = self.ENV['RO_SEA']*(temp/self.ENV['T0'])**((self.ENV['GRAV']/(self.ENV['LAPSE']*self.ENV['R']))-1.0) # [slug/ft**3]
+        temp = self.sea_level_temperature - self.temperature_lapse_rate*altitude
+        rho = self.sea_level_air_density*(temp/self.sea_level_temperature)**(
+            (self.gravity/(self.temperature_lapse_rate*self.gas_constant))-1.0)
         return temp, rho
 
     def __get_ground_height_from_hmap(self):
         """
         Get the height of the ground from the heightmap at the current (x, y) position.
         """
-        x_ = self.ENV["NS_MAX"] / self.terrain_hmap.shape[0] # terrain x size per pixel
-        y_ = self.ENV["EW_MAX"] / self.terrain_hmap.shape[1] # terrain y size per pixel
+        x_ = self.north_south_extent / self.terrain_hmap.shape[0]
+        y_ = self.east_west_extent / self.terrain_hmap.shape[1]
 
         x_loc = (self.state['xyz'][0]) / x_ + self.terrain_hmap.shape[0] // 2
         y_loc = (self.state['xyz'][1]) / y_ + self.terrain_hmap.shape[1] // 2
@@ -640,4 +652,3 @@ class HelicopterDynamics(DynamicSystem):
                             state_dots['xyz']/self.MR['R']])
 
         return y
-

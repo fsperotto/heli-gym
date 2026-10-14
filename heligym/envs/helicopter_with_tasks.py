@@ -3,11 +3,13 @@ import numpy as np
 from .helicopter import Heli
 
 class HeliHover(Heli):
-    def __init__(self, heli_name:str = "aw109"):
-        Heli.__init__(self, heli_name=heli_name)
+    def __init__(self, heli_name:str = "aw109", render_mode="human",
+                 wind_enabled=True, target_altitude=2000, **heli_kwargs):
+        Heli.__init__(self, heli_name=heli_name, render_mode=render_mode,
+                      wind_enabled=wind_enabled, **heli_kwargs)
         max_time = Heli.default_max_time
         task_target = {
-            "sea_alt": 4000,
+            "sea_alt": target_altitude,
             "north_loc": 0,
             "east_loc": 0
         }
@@ -51,13 +53,51 @@ class HeliHover(Heli):
 
         return reward, success_step
 
+
+class HeliStabilize(Heli):
+    """Reward level, motionless flight and strongly discourage crashes."""
+
+    CRASH_REWARD = -10_000.0
+    MOTION_WEIGHT = 1.0
+    INCLINATION_WEIGHT = 100.0
+
+    def __init__(self, heli_name: str = "aw109", render_mode="human",
+                 wind_enabled=True, **heli_kwargs):
+        super().__init__(heli_name=heli_name, render_mode=render_mode,
+                         wind_enabled=wind_enabled, **heli_kwargs)
+        self.set_max_time(self.default_max_time)
+
+    def _calculate_reward(self):
+        altitude = -self.heli_dyn.state["xyz"][2]
+        if self.heli_dyn._does_hit_ground(altitude):
+            return self.CRASH_REWARD, False
+
+        linear_velocity = self.heli_dyn.state["uvw"] / self.normalizers["v"]
+        angular_velocity = self.heli_dyn.state["pqr"] * self.normalizers["t"]
+        roll_pitch = self.heli_dyn.state["euler"][:2]
+
+        motion_penalty = self.MOTION_WEIGHT * (
+            np.dot(linear_velocity, linear_velocity)
+            + np.dot(angular_velocity, angular_velocity)
+        )
+        inclination_penalty = self.INCLINATION_WEIGHT * np.dot(roll_pitch, roll_pitch)
+        reward = -(motion_penalty + inclination_penalty)
+
+        speed = np.linalg.norm(self.heli_dyn.state["uvw"])
+        angular_speed = np.linalg.norm(self.heli_dyn.state["pqr"])
+        inclination = np.linalg.norm(roll_pitch)
+        success_step = speed < 0.5 and angular_speed < 0.01 and inclination < np.deg2rad(1.0)
+        return float(reward), bool(success_step)
+
 class HeliForwardFlight(Heli):
 
-    def __init__(self, heli_name:str = "aw109"):
-        Heli.__init__(self, heli_name=heli_name)
+    def __init__(self, heli_name:str = "aw109", render_mode="human",
+                 wind_enabled=True, target_altitude=2000, **heli_kwargs):
+        Heli.__init__(self, heli_name=heli_name, render_mode=render_mode,
+                      wind_enabled=wind_enabled, **heli_kwargs)
         max_time = Heli.default_max_time
         task_target = {
-            "sea_alt": 4000,
+            "sea_alt": target_altitude,
             "heading": 0,
             "vel": 100
         }

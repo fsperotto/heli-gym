@@ -13,7 +13,6 @@ from gymnasium.utils import seeding, EzPickle
 
 from .dynamics import HelicopterDynamics
 from .dynamics import WindDynamics
-from .renderer.api import Renderer
 
 FPS         = 50.0
 DT          = 1/FPS
@@ -21,69 +20,140 @@ FTS2KNOT    = 0.5924838 # ft/s to knots conversion
 EPS         = 1e-10 # small value for divison by zero
 R2D         = 180/math.pi # Rad to deg
 D2R         = 1/R2D
-FT2MTR      = 0.3048 # ft to meter
 TAU         = 2*math.pi
 FLOAT_TYPE  = np.float32
 
+CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
+with open(os.path.join(CONFIG_DIR, "weather", "default_weather.yaml")) as weather_file:
+    DEFAULT_WEATHER = yaml.safe_load(weather_file)
+
+
+def _config_path(category, name):
+    """Resolve either a bundled configuration name or an explicit YAML path."""
+    path = os.fspath(name)
+    if os.path.dirname(path):
+        return path
+    filename = path if path.endswith((".yaml", ".yml")) else path + ".yaml"
+    return os.path.join(CONFIG_DIR, category, filename)
+
 class Heli(gym.Env, EzPickle):
+
     metadata = {
         'render.modes': ['human', 'rgb_array'],
         'video.frames_per_second' : FPS
     }
+
     # Default maximum time for an episode
     default_max_time = 40.0
+
     # Default trim condition (steady-state / equilibrium), ground trim.
     default_trim_cond = {
         "yaw": 0.0,
         "yaw_rate": 0.0,
-        "ned_vel": [0.0, 0.0, 0.0],
-        "gr_alt": 100.0,
-        "xy": [0.0, 0.0],
-        "psi_mr": 0.0,
-        "psi_tr": 0.0
+        "ned_vel": [0.0, 0.0, 0.0], # north, east, down velocity
+        "gr_alt": 100.0,   # altitude
+        "xy": [0.0, 0.0],  # position
+        "psi_mr": 0.0,     # main rotor
+        "psi_tr": 0.0      # tail rotor
     }
+
     # default task target
     default_task_target = {}
-    def __init__(self, heli_name:str = "aw109"):
-        EzPickle.__init__(self)
-        yaml_path = os.path.join(os.path.dirname(__file__), "helis", heli_name + ".yaml")
-        with open(yaml_path) as foo:
-            params = yaml.safe_load(foo)
 
-        self.heli_dyn = HelicopterDynamics(params, DT)
-        self.wind_dyn = WindDynamics(params['ENV'], DT)
+    def __init__(self,
+                 heli_name:str = "aw109",
+                 terrain_name: str = "default_terrain",
+                 render_mode="human",
+                 wind_enabled=True,
+                 wind_direction=DEFAULT_WEATHER["wind_direction"],
+                 wind_speed=DEFAULT_WEATHER["wind_speed"],
+                 turbulence_level=DEFAULT_WEATHER["turbulence_level"],
+                 gas_constant=DEFAULT_WEATHER["gas_constant"],
+                 sea_level_temperature=DEFAULT_WEATHER["sea_level_temperature"],
+                 temperature_lapse_rate=DEFAULT_WEATHER["temperature_lapse_rate"],
+                 troposphere_height=DEFAULT_WEATHER["troposphere_height"],
+                 sea_level_air_density=DEFAULT_WEATHER["sea_level_air_density"],
+                 gravity=DEFAULT_WEATHER["gravity"]):
+
+        EzPickle.__init__(self,
+                          heli_name=heli_name,
+                          terrain_name=terrain_name,
+                          render_mode=render_mode,
+                          wind_enabled=wind_enabled,
+                          wind_direction=wind_direction,
+                          wind_speed=wind_speed,
+                          turbulence_level=turbulence_level,
+                          gas_constant=gas_constant,
+                          sea_level_temperature=sea_level_temperature,
+                          temperature_lapse_rate=temperature_lapse_rate,
+                          troposphere_height=troposphere_height,
+                          sea_level_air_density=sea_level_air_density,
+                          gravity=gravity)
+
+        self.wind_enabled = wind_enabled
+
+        if render_mode not in (None, "human"):
+            raise ValueError("render_mode must be None or human")
+        self.render_mode = render_mode
+
+        # Dynamics need terrain images even when no native renderer is loaded.
+        os.environ["HELIGYM_RESOURCE_DIR"] = os.path.join(os.path.dirname(__file__), "renderer", "resources")
+
+        with open(_config_path("helis", heli_name)) as config_file:
+            helicopter = yaml.safe_load(config_file)["HELI"]
+        with open(_config_path("terrains", terrain_name)) as config_file:
+            terrain = yaml.safe_load(config_file)
+
+        effective_wind_speed = wind_speed if self.wind_enabled else 0.0
+        self.heli_dyn = HelicopterDynamics(
+            helicopter=helicopter,
+            dt=DT,
+            resource_dir=os.environ["HELIGYM_RESOURCE_DIR"],
+            hmap_path=terrain["hmap"],
+            nmap_path=terrain["nmap"],
+            east_west_extent=terrain["ew_max"],
+            north_south_extent=terrain["ns_max"],
+            maximum_ground_altitude=terrain["max_alt"],
+            gas_constant=gas_constant,
+            sea_level_temperature=sea_level_temperature,
+            temperature_lapse_rate=temperature_lapse_rate,
+            troposphere_height=troposphere_height,
+            sea_level_air_density=sea_level_air_density,
+            gravity=gravity,
+        )
+        self.wind_dyn = WindDynamics(
+            dt=DT,
+            wind_direction=wind_direction,
+            wind_speed=effective_wind_speed,
+            turbulence_level=turbulence_level,
+        )
         self.heli_dyn.set_wind(self.wind_dyn.wind_mean_ned) # set mean wind as wind so that helicopter trims accordingly
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(self.heli_dyn.n_obs,), dtype=np.float32)
         self.action_space = spaces.Box(-1, +1, (self.heli_dyn.n_act,), dtype=np.float32)
+        self.previous_action = np.zeros(self.heli_dyn.n_act, dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=np.concatenate((np.full(self.heli_dyn.n_obs, -np.inf, dtype=np.float32),
+                                self.action_space.low)),
+            high=np.concatenate((np.full(self.heli_dyn.n_obs, np.inf, dtype=np.float32),
+                                 self.action_space.high)),
+            dtype=np.float32,
+        )
         self.successed_time = 0 # time counter for successing task through time.
         self.set_max_time()
         self.set_target()
         self.set_trim_cond()
         self.set_reward_weights()
         self.normalizers = {
-                                "t": np.sqrt(2*self.heli_dyn.MR["R"]/self.heli_dyn.ENV["GRAV"]),
+                                "t": np.sqrt(2*self.heli_dyn.MR["R"]/self.heli_dyn.gravity),
                                 "x": 2*self.heli_dyn.MR["R"],
-                                "v": np.sqrt(2*self.heli_dyn.MR["R"]*self.heli_dyn.ENV["GRAV"]),
-                                "a": self.heli_dyn.ENV["GRAV"]
+                                "v": np.sqrt(2*self.heli_dyn.MR["R"]*self.heli_dyn.gravity),
+                                "a": self.heli_dyn.gravity
                             }
         
-        self.renderer = Renderer(w=1024, h=768, title='heligym')
-        self.renderer.set_fps(FPS)
-
-        self.heli_obj = self.renderer.create_model('/resources/models/'+heli_name+'/'+heli_name+'.obj',
-                                                          '/resources/shaders/'+heli_name+'_vertex.vs',
-                                                          '/resources/shaders/'+heli_name+'_frag.fs')
-        self.renderer.add_permanent_object_to_window(self.heli_obj)
-     
-        self.terrain = self.renderer.create_model('/resources/models/terrain/terrain.obj',
-                                                 '/resources/shaders/terrain_vertex.vs',
-                                                 '/resources/shaders/terrain_frag.fs')
-        self.renderer.add_permanent_object_to_window(self.terrain)        
-
-        self.sky = self.renderer.create_model('/resources/models/sky/sky.obj')
-        self.renderer.add_permanent_object_to_window(self.sky)
-
-        self._bGuiText = False
+        self.renderer = None
+        if render_mode == "human":
+            from .heli_render import HeliRender
+            model_name = os.path.splitext(os.path.basename(os.fspath(heli_name)))[0]
+            self.renderer = HeliRender(heli_name=model_name, fps=FPS)
         self.paused = False
        
     # Setter functions for RL tasks
@@ -93,14 +163,14 @@ class Heli(gym.Env, EzPickle):
         self.task_duration = self.max_time/4 # [sec] Allowed time for successing task
 
     def set_target(self, target={}):
-        self.task_target = self.default_task_target
+        self.task_target = copy.deepcopy(self.default_task_target)
         self.task_target.update(target)
 
     def get_target(self):
         return copy.deepcopy(self.task_target)
 
     def set_trim_cond(self, trim_cond={}):
-        self.trim_cond = self.default_trim_cond
+        self.trim_cond = copy.deepcopy(self.default_trim_cond)
         self.trim_cond.update(trim_cond)
 
     def get_trim_cond(self):
@@ -110,56 +180,6 @@ class Heli(gym.Env, EzPickle):
         zero_ = np.zeros((self.heli_dyn.n_obs,self.heli_dyn.n_obs))
         self.base_reward_weight = zero_ if base_reward_weight is None else base_reward_weight
         self.terminal_reward_weight = zero_ if terminal_reward_weight is None else terminal_reward_weight
-
-    def __create_guiINFO_text(self):
-        self.guiINFO_ID = self.renderer.create_guiText("Observations", 30.0, 30.0, 250.0, 0.0)
-        self.guiINFO_text = []
-        self.guiINFO_text.append("FPS        : %3.0f ")
-        self.guiINFO_text.append("POWER      : %5.2f hp" )
-        self.guiINFO_text.append("LON_VEL    : %5.2f ft/s")
-        self.guiINFO_text.append("LAT_VEL    : %5.2f ft/s")
-        self.guiINFO_text.append("DWN_VEL    : %5.2f ft/s")
-        self.guiINFO_text.append("N_VEL      : %5.2f ft/s")
-        self.guiINFO_text.append("E_VEL      : %5.2f ft/s")
-        self.guiINFO_text.append("DES_RATE   : %5.2f ft/s")
-        self.guiINFO_text.append("ROLL       : %5.2f rad")
-        self.guiINFO_text.append("PITCH      : %5.2f rad")
-        self.guiINFO_text.append("YAW        : %5.2f rad")
-        self.guiINFO_text.append("ROLL_RATE  : %5.2f rad/sec")
-        self.guiINFO_text.append("PITCH_RATE : %5.2f rad/sec")
-        self.guiINFO_text.append("YAW_RATE   : %5.2f rad/sec")
-        self.guiINFO_text.append("N_POS      : %5.2f ft")
-        self.guiINFO_text.append("E_POS      : %5.2f ft")
-        self.guiINFO_text.append("ALT        : %5.2f ft")
-        self.guiINFO_text.append("GR_ALT     : %5.2f ft")
-        self.guiACTION_ID = self.renderer.create_guiText("Actions", 300.0, 30.0, 250.0, 0.0)
-        self.guiACTION_text = [
-            "COLLECTIVE : %6.3f",
-            "LON_CYCLIC : %6.3f",
-            "LAT_CYCLIC : %6.3f",
-            "PEDAL      : %6.3f",
-        ]
-        self.guiCOMMAND_ID = self.renderer.create_guiText("Command Instructions", 570.0, 30.0, 360.0, 0.0)
-        self.guiCOMMAND_text = [
-            "P          : Pause / resume",
-            "R          : Reset and restart",
-            "X          : Set all controls to zero",
-            "Esc        : Stop and close window",
-            "Up / Down  : Lon. cyclic +0.2 / -0.2",
-            "Right/Left : Lat. cyclic +0.2 / -0.2",
-            "Z / S      : Collective  +0.2 / -0.2",
-            "D / Q      : Pedals      +0.2 / -0.2",
-            "Controls are clipped to [-1, +1]",
-            "One change per key press",
-        ]
-
-    def __add_to_guiText(self):
-        info_val = np.array(self.renderer.get_fps())
-        info_val = np.append(info_val, self.heli_dyn.observation)
-        self.renderer.add_guiText(self.guiINFO_ID, self.guiINFO_text, info_val) 
-        self.renderer.add_guiText(self.guiACTION_ID, self.guiACTION_text, self.heli_dyn.action)
-        self.renderer.add_guiText(self.guiCOMMAND_ID, self.guiCOMMAND_text,
-                                  np.zeros(len(self.guiCOMMAND_text)))
 
     def process_keyboard(self, actions=None, update_action=False):
         """Update manual controls; callers skip step() while paused, but keep rendering."""
@@ -193,92 +213,92 @@ class Heli(gym.Env, EzPickle):
         return delta
 
     def render(self):
-        if self.renderer.is_close():
-            self.renderer.close()
+        if self.renderer is None:
             return
-        if self.paused:
-            self.renderer.wait_events()
-            return
-        info_val = np.array(self.renderer.get_fps())
-        info_val = np.append(info_val, self.heli_dyn.observation)
-        
-        self.renderer.set_guiText(self.guiINFO_ID, self.guiINFO_text, info_val)
-        self.renderer.set_guiText(self.guiACTION_ID, self.guiACTION_text, self.heli_dyn.action)
-        self.renderer.set_control_bars(self.heli_dyn.action)
-        
-        self.renderer.rotate_MR(self.heli_obj, 
-                                self.heli_dyn.state['betas'][1],
-                                self.heli_dyn.state['betas'][0],
-                                self.heli_dyn.state['psi_mr'][0])
-
-        self.renderer.rotate_TR(self.heli_obj, 
-                                0,
-                                self.heli_dyn.state['psi_tr'][0],
-                                0)
-
-
-        self.renderer.translate_model(self.heli_obj, 
-                                    self.heli_dyn.state['xyz'][0] * FT2MTR,
-                                    self.heli_dyn.state['xyz'][1] * FT2MTR,
-                                    self.heli_dyn.state['xyz'][2] * FT2MTR
-                                    )
-
-        self.renderer.rotate_model(self.heli_obj, 
-                                    self.heli_dyn.state['euler'][0],
-                                    self.heli_dyn.state['euler'][1],
-                                    self.heli_dyn.state['euler'][2]
-                                    )
-
-        self.renderer.translate_model(self.sky, 
-                                    self.heli_dyn.state['xyz'][0] * FT2MTR,
-                                    self.heli_dyn.state['xyz'][1] * FT2MTR,
-                                    self.heli_dyn.state['xyz'][2] * FT2MTR + 500
-                                    )
-
-        self.renderer.set_camera_pos(self.heli_dyn.state['xyz'][0] * FT2MTR,
-                                     self.heli_dyn.state['xyz'][1] * FT2MTR + 30,
-                                     self.heli_dyn.state['xyz'][2] * FT2MTR )
-
-
-        if not self.renderer.is_visible():
-            self.renderer.show_window()
-            
-        self.renderer.render()
+        self.renderer.render(
+            state=self.heli_dyn.state,
+            observation=self.heli_dyn.observation,
+            action=self.heli_dyn.action,
+            paused=self.paused,
+        )
         
     def close(self):
-        self.renderer.close()
-        self.renderer.terminate()
+        if self.renderer is not None:
+            self.renderer.close()
     
     def exit(self):
         sys.exit()
 
     def step(self, actions):
+        """Advance physics, treating numerical divergence as a failed episode.
+
+        Exploratory controls can push this model outside its numerical envelope.
+        SB3 must receive finite terminal observations, including for replay and
+        normalization. Keep the last valid state for the terminal frame; the
+        caller must reset after any terminated/truncated transition.
+        """
+        actions = np.asarray(actions, dtype=np.float32)
+        if actions.shape != self.action_space.shape or not np.isfinite(actions).all():
+            raise ValueError("Actions must have the action-space shape and be finite")
+        actions = np.clip(actions, self.action_space.low, self.action_space.high)
         self.time_counter += DT
-        # Turbulence calculations
-        pre_observations = self.heli_dyn.observation
-        wind_action = np.concatenate([pre_observations[4:7], pre_observations[16:]])
-        wind_turb_vel = self.wind_dyn.step(wind_action)
-        # Helicopter dynamics calculations
-        self.heli_dyn.set_wind(wind_turb_vel)  
-        observation = self.heli_dyn.step(actions)
-        reward, successed_step = self._calculate_reward()
-        info = self._get_info()
-        done = info['failed'] or info['successed'] or reward == np.nan
+        previous_obs = np.copy(self.heli_dyn.observation)
+        previous_state = self.heli_dyn.state.val.copy()
+        previous_dots = self.heli_dyn.state_dots.val.copy()
+        try:
+            # Raise at the first bad numerical operation, before NaNs reach
+            # terrain indexing. Underflow is harmless and remains permitted.
+            with np.errstate(over='raise', invalid='raise', divide='raise'):
+                wind_action = np.concatenate([previous_obs[4:7], previous_obs[16:]])
+                if self.wind_enabled:
+                    self.heli_dyn.set_wind(self.wind_dyn.step(wind_action))
+                observation = self.heli_dyn.step(actions)
+                if not (np.isfinite(observation).all()
+                        and np.isfinite(self.heli_dyn.state.val).all()
+                        and np.isfinite(self.heli_dyn.state_dots.val).all()):
+                    raise FloatingPointError("Non-finite helicopter dynamics")
+                reward, successed_step = self._calculate_reward()
+                if not np.isfinite(reward):
+                    raise FloatingPointError("Non-finite task reward")
+                info = self._get_info()
+        except (FloatingPointError, OverflowError, ZeroDivisionError) as error:
+            self.heli_dyn.state.val[:] = previous_state
+            self.heli_dyn.state_dots.val[:] = previous_dots
+            self.heli_dyn.observation = previous_obs.copy()
+            info = {'failed': True, 'successed': False,
+                    'time_up': self._is_time_up(), 'numerical_failure': True,
+                    'numerical_failure_reason': str(error)}
+            self.previous_action = actions.copy()
+            return self._agent_observation(previous_obs), -100.0, True, False, info
+        done = info['failed'] or info['successed']
         truncated = info['time_up']
         self.successed_time += DT if successed_step else 0
-        return np.copy(observation), reward, done, truncated, info
+        self.previous_action = actions.copy()
+        return self._agent_observation(observation), float(reward), bool(done), bool(truncated), info
 
-    def reset(self):
+    def _agent_observation(self, dynamics_observation):
+        """Append the last direct policy action to the dynamics observation."""
+        return np.concatenate((dynamics_observation, self.previous_action)).astype(
+            np.float32, copy=False
+        )
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        # Wind dynamics currently draw from NumPy's process-local generator.
+        if seed is not None:
+            np.random.seed(seed)
         self.paused = False
         self.time_counter = 0
         self.successed_time = 0
         self.wind_dyn.reset()
+        # Trim in the same mean wind as on construction, never in the previous
+        # episode's instantaneous turbulence (which may have diverged).
+        self.heli_dyn.set_wind(self.wind_dyn.wind_mean_ned.copy())
         self.heli_dyn.reset(self.trim_cond)
-        if not self._bGuiText:
-            self.__create_guiINFO_text()
-            self.__add_to_guiText()
-            self._bGuiText = True
-        return np.copy(self.heli_dyn.observation), self._get_info()
+        # The reset state was produced with the trim controls, so expose those
+        # controls as the action immediately preceding the first policy step.
+        self.previous_action[:] = self.heli_dyn.action
+        return self._agent_observation(self.heli_dyn.observation), self._get_info()
 
     def _get_info(self):
         return {
@@ -292,7 +312,7 @@ class Heli(gym.Env, EzPickle):
         cond2 = self.heli_dyn.state_dots['xyz'][2] > self.heli_dyn.MR['V_TIP']*0.05
         cond3 = self.heli_dyn.state['euler'][0] > 60*D2R
         cond4 = self.heli_dyn.state['euler'][1] > 60*D2R
-        cond5 = np.abs(self.heli_dyn.state['xyz'][0]) > self.heli_dyn.ENV["NS_MAX"] / 2 or np.abs(self.heli_dyn.state['xyz'][1]) > self.heli_dyn.ENV["EW_MAX"] / 2 \
+        cond5 = np.abs(self.heli_dyn.state['xyz'][0]) > self.heli_dyn.north_south_extent / 2 or np.abs(self.heli_dyn.state['xyz'][1]) > self.heli_dyn.east_west_extent / 2 \
              or -self.heli_dyn.state['xyz'][2] > self.heli_dyn.ground_touching_altitude() + 10000
         cond = (cond1 and (cond2 or cond3 or cond4)) or cond5
         return cond

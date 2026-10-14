@@ -221,6 +221,17 @@ def get_camera_pos(camera):
     """
     return lib.get_camera_pos(camera)
 
+
+def update_helicopter_camera(window, north, east, down, bearing):
+    """Update the camera from a helicopter pose; V selects the tracking mode."""
+    try:
+        update = lib.update_helicopter_camera
+    except AttributeError as exc:
+        raise RuntimeError("Rebuild the native renderer to enable chase view.") from exc
+    update.argtypes = [ctypes.c_void_p] + [ctypes.c_float] * 4
+    update.restype = None
+    update(window, north, east, down, bearing)
+
 ###################################################################################
 lib.is_visible.argtypes = [ctypes.c_void_p]
 lib.is_visible.restype = ctypes.c_bool

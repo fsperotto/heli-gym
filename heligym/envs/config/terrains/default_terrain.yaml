@@ -1,0 +1,5 @@
+hmap: "/models/terrain/terrain_hmap.png"
+nmap: "/models/terrain/terrain_normal.png"
+ew_max: 6561.6798  # [ft] east-west span
+ns_max: 6561.6798  # [ft] north-south span
+max_alt: 8809.0551 # [ft] maximum terrain-map altitude

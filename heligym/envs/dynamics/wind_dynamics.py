@@ -1,8 +1,5 @@
-import yaml
 import sys, math
 import numpy as np
-import os
-import copy
 
 from .dynamics import DynamicSystem, State
 from .lookup import LookUpTable
@@ -18,12 +15,12 @@ class WindDynamics(DynamicSystem):
     """Wind model for aircraft simulations with Dryden Turbulence model."""
     _observations = ["WIND_N", "WIND_E", "WIND_D"]
 
-    def __init__(self, params, dt):
+    def __init__(self, *, dt, wind_direction, wind_speed, turbulence_level):
         super(WindDynamics, self).__init__(dt)
         self.eta_norm = 1.0/np.sqrt(dt)
-        self.turbulence_level = params['TURB_LVL']
-        self.wind_dir = params['WIND_DIR']*D2R
-        self.wind_speed = params['WIND_SPD']
+        self.turbulence_level = turbulence_level
+        self.wind_dir = wind_direction*D2R
+        self.wind_speed = wind_speed
         self.wind_mean_ned = self.wind_speed*np.array([np.cos(self.wind_dir), np.sin(self.wind_dir), 0], dtype=np.float32)
         self.__register_states()
         self.TEP = LookUpTable(7,12) # Turbulence Exceedence Probability Lookup Table
@@ -126,8 +123,8 @@ class WindDynamics(DynamicSystem):
 
 if __name__=='__main__':
     import matplotlib.pyplot as plt 
-    params = {'TURB_LVL': 3, 'WIND_DIR': 45, 'WIND_SPD': 30}
-    turb_dyn = WindDynamics(turbulence_level=1, dt=0.01)
+    turb_dyn = WindDynamics(dt=0.01, wind_direction=45,
+                            wind_speed=30, turbulence_level=3)
     h_gr = np.array([500], dtype=np.float32)
     vel = np.array([100,0,0], dtype=np.float32)
     all_obs = []

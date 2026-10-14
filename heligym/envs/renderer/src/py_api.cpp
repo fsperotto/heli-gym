@@ -177,3 +177,8 @@ void rotate_TR(Model* model, float phi, float theta, float psi)
 {
 	model->tailrotor = glm::vec3(phi, theta, psi);
 }
+
+void update_helicopter_camera(Window* window, float north, float east, float down, float bearing)
+{
+	window->update_helicopter_camera(north, east, down, bearing);
+}

@@ -66,6 +66,10 @@ extern "C" RENDERER_API Camera* get_camera(Window* window);
 // Set Camera position of each axis.
 extern "C" RENDERER_API void set_camera_pos(Camera* camera, float x, float y, float z);
 
+// Track the helicopter using either the fixed-cardinal or bearing-following view.
+extern "C" RENDERER_API void update_helicopter_camera(Window* window, float north, float east,
+											float down, float bearing);
+
 // Get camera position as float array.
 extern "C" RENDERER_API float* get_camera_pos(Camera * camera);
 

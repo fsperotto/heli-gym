@@ -71,7 +71,14 @@ install_heligym() (
         uv venv "$VENV_DIR" "${PYTHON_ARGS[@]}" --no-python-downloads
     fi
 
-    uv pip install -e . --python "$VENV_DIR/bin/python" --no-python-downloads
+    uv pip install -e .[train] --python "$VENV_DIR/bin/python" --no-python-downloads
+    echo "Building the native renderer..."
+    if ! bash "$PROJECT_DIR/compile_renderer.sh"; then
+        echo "Native renderer build failed." >&2
+        echo "On Ubuntu/Debian, install the build dependencies with:" >&2
+        echo "  sudo apt install build-essential cmake libglfw3-dev libassimp-dev libgl1-mesa-dev" >&2
+        return 1
+    fi
     printf 'Installation complete. Activate the environment with: source "%s/bin/activate"\n' "$VENV_DIR"
 )
 

@@ -31,7 +31,10 @@ class KeyboardControlsTests(unittest.TestCase):
             spec.loader.exec_module(module)
         self.env = module.Heli.__new__(module.Heli)
         self.env.paused = False
-        self.env.heli_dyn = SimpleNamespace(action=np.zeros(4))
+        self.env.heli_dyn = SimpleNamespace(
+            action=np.zeros(4), observation=np.zeros(17), state={}, n_act=4
+        )
+        self.env.previous_action = np.zeros(4, dtype=np.float32)
         self.env.renderer = Mock()
 
     def test_all_controls_change_the_correct_action(self):
@@ -42,34 +45,34 @@ class KeyboardControlsTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.env.renderer.get_key_presses.return_value = [key]
                 original = np.zeros(4)
-                result = self.env.process_keyboard(original)
+                result = self.env.process_keyboard(original, update_action=True)
                 expected = np.zeros(4)
                 expected[index] = delta
                 np.testing.assert_allclose(result, expected)
                 np.testing.assert_array_equal(original, np.zeros(4))
-                np.testing.assert_array_equal(self.env.heli_dyn.action, result)
+                np.testing.assert_allclose(self.env.heli_dyn.action, expected)
 
     def test_zero_controls_preserves_pause_and_event_order(self):
         for paused in (False, True):
             with self.subTest(paused=paused):
                 self.env.paused = paused
                 self.env.renderer.get_key_presses.return_value = ['x']
-                actions = self.env.process_keyboard([.5, -.8, 1, -.2])
-                np.testing.assert_array_equal(actions, np.zeros(4))
-                np.testing.assert_array_equal(self.env.heli_dyn.action, actions)
+                delta = self.env.process_keyboard([.5, -.8, 1, -.2])
+                np.testing.assert_allclose(delta, [-.5, .8, -1, .2])
+                np.testing.assert_array_equal(self.env.heli_dyn.action, np.zeros(4))
                 self.assertEqual(self.env.paused, paused)
         self.env.renderer.get_key_presses.return_value = ['z', 'x', 'right']
         actions = self.env.process_keyboard(np.ones(4))
-        np.testing.assert_allclose(actions, [0, 0, .2, 0])
+        np.testing.assert_allclose(actions, [-1, -1, .2, -1])
 
     def test_clipping_and_event_order(self):
         self.env.renderer.get_key_presses.return_value = ['z', 'up', 'right', 'd'] * 20
-        np.testing.assert_array_equal(self.env.process_keyboard(np.zeros(4)), np.ones(4))
+        np.testing.assert_allclose(self.env.process_keyboard(np.zeros(4)), [.2, .2, .2, .2])
         self.env.renderer.get_key_presses.return_value = ['s', 'down', 'left', 'q'] * 20
-        np.testing.assert_array_equal(self.env.process_keyboard(np.zeros(4)), -np.ones(4))
+        np.testing.assert_allclose(self.env.process_keyboard(np.zeros(4)), [-.2, -.2, -.2, -.2])
         self.env.renderer.get_key_presses.return_value = ['up', 'down']
         result = self.env.process_keyboard(np.ones(4))
-        self.assertAlmostEqual(result[1], .8)
+        self.assertAlmostEqual(result[1], -.2)
 
     def test_pause_and_resume_and_control_changes_while_paused(self):
         self.env.renderer.get_key_presses.return_value = ['p', 'q']
@@ -77,19 +80,24 @@ class KeyboardControlsTests(unittest.TestCase):
         self.assertTrue(self.env.paused)
         self.assertAlmostEqual(actions[3], -.2)
         self.env.renderer.get_key_presses.return_value = ['p']
-        np.testing.assert_array_equal(self.env.process_keyboard(actions), actions)
+        np.testing.assert_array_equal(self.env.process_keyboard(actions), np.zeros(4))
         self.assertFalse(self.env.paused)
 
     def test_paused_render_only_services_window_events(self):
         self.env.paused = True
-        self.env.renderer.is_close.return_value = False
         self.env.render()
-        self.assertEqual([call[0] for call in self.env.renderer.mock_calls],
-                         ['is_close', 'wait_events'])
+        self.env.renderer.render.assert_called_once_with(
+            state=self.env.heli_dyn.state,
+            observation=self.env.heli_dyn.observation,
+            action=self.env.heli_dyn.action,
+            paused=True,
+        )
 
     def test_demo_keeps_servicing_window_but_skips_physics_while_paused(self):
         trim_calls = []
         class TrimDynamics:
+            n_act = 4
+
             def __init__(self):
                 self.action = np.zeros(4)
                 self.state = {'position': np.zeros(3)}
@@ -114,9 +122,9 @@ class KeyboardControlsTests(unittest.TestCase):
         self.assertEqual(self.env.render.call_count, 5)
         self.assertEqual(self.env.step.call_count, 3)
         self.env.close.assert_called_once()
-        self.assertEqual(trim_calls, [self.env.trim_cond] * 3)
+        self.assertEqual(trim_calls, [])
         for call in self.env.step.call_args_list:
-            np.testing.assert_array_equal(call.args[0], [.1, -.2, .3, -.4])
+            np.testing.assert_array_equal(call.args[0], np.zeros(4))
         np.testing.assert_array_equal(self.env.heli_dyn.state['position'], np.zeros(3))
 
     def test_restart_resets_dynamics_timers_and_restores_trim_controls(self):
@@ -124,10 +132,12 @@ class KeyboardControlsTests(unittest.TestCase):
         self.env.time_counter = 10
         self.env.successed_time = 5
         self.env.wind_dyn = Mock()
+        self.env.wind_dyn.wind_mean_ned = np.zeros(3)
         self.env.trim_cond = {'gr_alt': 100}
         self.env._bGuiText = True
         self.env._get_info = Mock(return_value={})
         self.env.heli_dyn.observation = np.zeros(17)
+        self.env.heli_dyn.set_wind = Mock()
         trimmed = np.array([.1, -.2, .3, -.4], dtype=np.float32)
         self.env.heli_dyn.reset = Mock(side_effect=lambda _: setattr(
             self.env.heli_dyn, 'action', trimmed.copy()))
@@ -138,7 +148,7 @@ class KeyboardControlsTests(unittest.TestCase):
         self.assertEqual(self.env.successed_time, 0)
         self.env.wind_dyn.reset.assert_called_once()
         self.env.heli_dyn.reset.assert_called_once_with(self.env.trim_cond)
-        np.testing.assert_allclose(actions, [.1, 0, .3, -.4], atol=1e-7)
+        np.testing.assert_allclose(actions, [.2, .2, 0, 0], atol=1e-7)
 
 
 if __name__ == '__main__':
