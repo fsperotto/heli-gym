@@ -30,6 +30,9 @@ MANIFEST
 *.manifest
 *.spec
 
+#uv
+uv.lock
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
