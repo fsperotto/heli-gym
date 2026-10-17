@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=heligym_train
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=25
 #SBATCH --time=11:30:00
 #SBATCH --partition=gpu
-#SBATCH --qos=co_long_gpu
+#SBATCH --gres=gpu:1
 #SBATCH --output=/stck/fperotto/log/slurm.%j.out
 #SBATCH --error=/stck/fperotto/log/slurm.%j.err
 
-# _SBATCH --time=0-12:00
+# _SBATCH --qos=co_long_gpu
 
 set -euo pipefail
 
-source ./init.sh
-
-srun python learn.py --no-wind --task=stabilize --n-steps=100000 --no-render --n-envs=24
-
+#srun python learn.py --no-wind --task=stabilize --n-steps=100000 --no-render --n-envs=24
 
 #cd "$SLURM_SUBMIT_DIR"
 cd "${WORKDIR:-/tmp_user/juno/${USER}}/SourceCode/heli-gym"
+
+#activate the virtual environment
+source ./init.sh
+#source .venv/bin/activate
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -39,11 +42,13 @@ archive_results() {
     fi
     exit "$status"
 }
+#call the function on exit, even if the script is interrupted
 trap archive_results EXIT
 
 #save commit hash to know which version of the code was used for this run
 git rev-parse HEAD > "${run_dir}/git-commit.txt"
 
+#python -u is for disabling buffering output messages, so that they are printed in real time
 srun --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" \
     .venv/bin/python -u learn.py \
     --task stabilize \
