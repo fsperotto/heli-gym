@@ -33,7 +33,6 @@ class HeliRender:
         self.native.add_permanent_object_to_window(self.sky)
 
         self.info_text = [
-            "FPS        : %3.0f ",
             "POWER      : %5.2f hp",
             "LON_VEL    : %5.2f ft/s",
             "LAT_VEL    : %5.2f ft/s",
@@ -51,6 +50,21 @@ class HeliRender:
             "E_POS      : %5.2f ft",
             "ALT        : %5.2f ft",
             "GR_ALT     : %5.2f ft",
+        ]
+        self.simulation_text = [
+            "FPS        : %3.0f",
+            "STEP       : %9.0f",
+            "REWARD     : %9.3f",
+        ]
+        self.wind_text = [
+            "ENABLED    : %.0f (0 off, 1 on)",
+            "MEAN_SPEED : %6.2f ft/s",
+            "MEAN_DIR   : %6.1f deg",
+            "TURB_LEVEL : %3.0f",
+            "SPEED      : %6.2f ft/s",
+            "NORTH      : %6.2f ft/s",
+            "EAST       : %6.2f ft/s",
+            "DOWN       : %6.2f ft/s",
         ]
         self.action_text = [
             "COLLECTIVE : %6.3f",
@@ -73,6 +87,8 @@ class HeliRender:
         ]
         self.info_id = self.native.create_guiText("Observations", 30.0, 30.0, 250.0, 0.0)
         self.action_id = self.native.create_guiText("Actions", 300.0, 30.0, 250.0, 0.0)
+        self.simulation_id = self.native.create_guiText("Simulation", 300.0, 160.0, 250.0, 0.0)
+        self.wind_id = self.native.create_guiText("Wind", 300.0, 270.0, 250.0, 0.0)
         self.command_id = self.native.create_guiText(
             "Command Instructions", 570.0, 30.0, 360.0, 0.0
         )
@@ -80,12 +96,18 @@ class HeliRender:
         # Own these arrays because the native GUI retains pointers to them.
         self.info_values = np.zeros(len(self.info_text), dtype=np.float32)
         self.action_values = np.zeros(4, dtype=np.float32)
+        self.simulation_values = np.zeros(len(self.simulation_text), dtype=np.float32)
         self.command_values = np.zeros(len(self.command_text), dtype=np.float32)
+        self.wind_values = np.zeros(len(self.wind_text), dtype=np.float32)
         self.native.add_guiText(self.info_id, self.info_text, self.info_values)
         self.native.add_guiText(self.action_id, self.action_text, self.action_values)
+        self.native.add_guiText(self.simulation_id, self.simulation_text, self.simulation_values)
         self.native.add_guiText(self.command_id, self.command_text, self.command_values)
+        self.native.add_guiText(self.wind_id, self.wind_text, self.wind_values)
 
-    def render(self, state, observation, action, paused=False):
+    def render(self, state, observation, action, paused=False, step=0, reward=0.0,
+               wind_enabled=False, wind_speed=0.0, wind_direction=0.0,
+               turbulence_level=0, wind_ned=None):
         """Draw one snapshot without retaining or modifying the environment."""
         if self.is_close():
             self.close()
@@ -94,11 +116,18 @@ class HeliRender:
             self.wait_events()
             return
 
-        self.info_values[0] = self.native.get_fps()
-        self.info_values[1:] = observation
+        self.info_values[:] = observation
+        self.simulation_values[:] = (self.native.get_fps(), step, reward)
         self.action_values[:] = action
+        self.wind_values.fill(0.0)
+        if wind_enabled:
+            vector = np.zeros(3, dtype=np.float32) if wind_ned is None else wind_ned
+            self.wind_values[:] = (1, wind_speed, wind_direction, turbulence_level,
+                                   np.linalg.norm(vector), *vector)
         self.native.set_guiText(self.info_id, self.info_text, self.info_values)
         self.native.set_guiText(self.action_id, self.action_text, self.action_values)
+        self.native.set_guiText(self.simulation_id, self.simulation_text, self.simulation_values)
+        self.native.set_guiText(self.wind_id, self.wind_text, self.wind_values)
         self.native.set_control_bars(action)
 
         self.native.rotate_MR(

@@ -25,6 +25,7 @@ elif sys.platform == 'linux':
     if os.environ['HELIGYM_RESOURCE_DIR'] not in os.environ["LD_LIBRARY_PATH"]:
         os.environ['LD_LIBRARY_PATH'] += os.pathsep + os.environ['HELIGYM_RESOURCE_DIR']
         try:
+            print("[heligym] Restarting Python once to configure renderer libraries...", flush=True)
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception as e:
             print(e)

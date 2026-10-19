@@ -15,6 +15,107 @@ python test.py
 `test.py` opens an OpenGL window, so it also requires a graphical session or
 working display forwarding.
 
+## Training and saved runs
+
+Install the optional training dependencies with `pip install -e '.[train]'`.
+`main.py` accepts the positional commands `train`, `eval`, `plot`, and `render`.
+With no commands it runs all four in that order; otherwise it runs only the
+selected stages, in the same pipeline order.
+
+```bash
+python main.py --target-dir runs/hover                 # entire pipeline
+python main.py train eval --target-dir runs/hover      # headless training and evaluation
+python main.py eval plot --target-dir runs/hover       # evaluate a saved policy and plot statistics
+python main.py plot --target-dir runs/hover            # plot saved statistics only
+python main.py render --target-dir runs/hover          # one episode in the GUI
+```
+
+Use `--task smooth-stabilize` or `--task smooth-hover` to add a control
+smoothness cost to the corresponding task. Each step subtracts
+`sum((action - previous_action)**2)` over the four normalized, clipped controls.
+Large jumps cost more than small corrections; unchanged controls cost zero.
+The first step compares against the reset trim controls, and every reset starts
+a new action history. The previous controls are included in the observation.
+When constructing these environments directly, `smoothness_weight` scales this
+cost (default 1.0; zero recovers the base task reward).
+
+`stabilize` penalizes linear/angular velocity and roll/pitch tilt, with a large
+crash cost. `hover` targets north/east position and sea altitude while suppressing
+angular rates; it does not explicitly track a heading. The smooth variants keep
+these base objectives and success conditions. They penalize immediate control
+changes, rather than imposing a hard control-rate limit.
+
+```bash
+python main.py train --task smooth-stabilize --target-dir runs/smooth-stabilize
+python main.py train --task smooth-hover --target-dir runs/smooth-hover
+```
+
+Use `--n-checkpoints N` to save up to N intermediate checkpoints during training
+(default: 0, disabled). The count excludes the final model. For example,
+`--total-timesteps 1000000 --n-checkpoints 4` saves checkpoints near 200k, 400k,
+600k, and 800k transitions, then saves the final model in the target directory.
+Triggers count transitions across all environments and fire on the first vector
+step at or beyond each threshold; a vector step reaching the requested training
+end is reserved for the final save. Very short runs cap the count to the number
+of available vector steps before that end.
+
+Checkpoints are stored under `checkpoints/<run timestamp>/step_<actual timesteps>/`,
+with `model.zip`, matching `vecnormalize.pkl` when normalization is enabled, and
+`arguments.json`. Previous checkpoints survive subsequent saves and fresh training
+runs in the same target directory. Evaluate/render any checkpoint by passing its
+folder as `--target-dir`. At each checkpoint, the target directory's
+`learning_curves.json` is atomically replaced with the complete episode history
+so far; only this latest cumulative history is retained. Final saving updates it
+again. Checkpoint timing is independent of SB3's printed training statistics.
+`--n-checkpoints` replaces the previously unused `--checkpoint-interval` option.
+
+`train` saves the policy, normalization statistics (when enabled), run arguments,
+and episode data in `learning_curves.json`. `eval` runs ten deterministic episodes
+without rendering and writes episode returns, lengths, and summary statistics to
+`evaluation.json`; use `--eval-episodes` to change the count. `plot` reads these
+JSON files, saves `learning_curves.png` and/or `evaluation.png`, and displays the
+figures. On a server, set `MPLBACKEND=Agg` to save figures without opening windows.
+`render` shows one deterministic episode at simulator speed. Press **P** to pause
+or resume playback; the window stays responsive while physics is paused.
+The GUI’s **Simulation** panel shows FPS, the current episode step, and the latest
+unnormalized step reward. Step and reward reset to zero at the start of each episode.
+The **Wind** panel shows whether wind is enabled, mean speed and direction,
+turbulence level, and the current wind speed and north/east/down components
+(including turbulence) in ft/s. Direction is clockwise from north. Disabled wind
+shows zero values. These display values are not added to the agent observations.
+
+Independent `eval` and `render` commands reuse the algorithm and environment
+settings in the run's `arguments.json`; explicit CLI options override them.
+For example, `python main.py render --target-dir runs/hover --wind` enables wind
+even if the run was trained with `--no-wind`. These two flags are mutually exclusive.
+Set `--wind-speed` (ft/s), `--wind-direction` (degrees clockwise from north),
+and `--turbulence-level` (1–7) to override weather settings, for example:
+
+```bash
+python main.py render --target-dir runs/hover --wind --wind-speed 12 --wind-direction 90 --turbulence-level 3
+```
+
+These settings are saved with the run and restored for independent evaluation
+and rendering. Unspecified values use the environment defaults when no saved
+value exists. When wind is disabled, all three weather overrides are ignored.
+For older runs without saved settings, supply matching options yourself. Plotting
+requires the new saved episode data; an existing PNG alone cannot recreate it.
+The positional commands replace `--no-learn`, `--no-render`, and `--no-stats-plot`.
+Use `python main.py --help` for the remaining options.
+
+Startup and command execution print progress immediately, with elapsed times for
+PyTorch/SB3 imports, model loading, environment creation, training and saving.
+These messages also appear promptly when stdout is redirected to a log file.
+GUI library-path setup runs before simulator/ML imports to avoid repeating those
+imports if Python needs to restart. `--help` and plot-only commands continue to
+avoid loading the training dependencies.
+
+On WSL, keep the checkout **and its virtual environment** on the native Linux
+filesystem for best file-access performance. A path under `/home` that links to
+`/mnt/c` or `/mnt/d` still uses the Windows-backed filesystem; `pwd -P` and
+`df -T . .venv` show the actual location and filesystem. See
+[Microsoft's WSL filesystem guidance](https://learn.microsoft.com/en-us/windows/wsl/interop).
+
 -------------------------------------
 ## __Environment Details__
 

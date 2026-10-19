@@ -12,7 +12,7 @@ class HeliRenderTests(unittest.TestCase):
     def setUp(self):
         self.native = Mock()
         self.native.create_model.side_effect = ["helicopter", "terrain", "sky"]
-        self.native.create_guiText.side_effect = [1, 2, 3]
+        self.native.create_guiText.side_effect = [1, 2, 3, 4, 5]
         self.native.is_close.return_value = False
         self.native.is_visible.return_value = False
         self.native.get_fps.return_value = 50.0
@@ -41,6 +41,34 @@ class HeliRenderTests(unittest.TestCase):
         )
         self.native.show_window.assert_called_once()
         self.native.render.assert_called_once()
+
+    def test_simulation_metrics_are_separate_from_observations(self):
+        simulation_values = self.renderer.simulation_values
+        self.renderer.render(self.state, self.observation, self.action, step=42, reward=-2.5)
+        np.testing.assert_array_equal(self.renderer.info_values, self.observation)
+        np.testing.assert_array_equal(simulation_values, [50, 42, -2.5])
+        self.assertFalse(any('FPS' in label for label in self.renderer.info_text))
+        self.native.set_guiText.assert_any_call(
+            self.renderer.simulation_id, self.renderer.simulation_text, simulation_values)
+        # The C++ GUI retains this buffer, so updates must preserve its address.
+        self.renderer.render(self.state, self.observation, self.action, step=43, reward=1.25)
+        self.assertIs(self.renderer.simulation_values, simulation_values)
+        np.testing.assert_array_equal(simulation_values, [50, 43, 1.25])
+
+    def test_wind_panel_shows_settings_and_current_vector(self):
+        wind_values = self.renderer.wind_values
+        self.renderer.render(self.state, self.observation, self.action,
+                             wind_enabled=True, wind_speed=12, wind_direction=90,
+                             turbulence_level=3, wind_ned=np.array([3, 4, -12]))
+        np.testing.assert_array_equal(wind_values, [1, 12, 90, 3, 13, 3, 4, -12])
+        self.native.set_guiText.assert_any_call(
+            self.renderer.wind_id, self.renderer.wind_text, wind_values)
+        # Disabling wind clears even previously displayed enabled wind values.
+        self.renderer.render(self.state, self.observation, self.action,
+                             wind_enabled=False, wind_speed=12, wind_direction=90,
+                             turbulence_level=3, wind_ned=np.array([3, 4, -12]))
+        self.assertIs(self.renderer.wind_values, wind_values)
+        np.testing.assert_array_equal(wind_values, np.zeros(8))
 
     def test_paused_render_only_services_events(self):
         self.renderer.render(self.state, self.observation, self.action, paused=True)

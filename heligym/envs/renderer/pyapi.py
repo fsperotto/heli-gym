@@ -2,14 +2,25 @@ import os
 import sys
 import ctypes
 import numpy as np
+from pathlib import Path
 
 """
     Load shadered library w.r.t OS.
 """
+
+renderer_dir = Path(__file__).resolve().parent
+
 if sys.platform == 'win32':
-    lib = ctypes.cdll.LoadLibrary(os.environ['HELIGYM_PYTHON_DIR'] + '/Heligym.dll')
+
+    # Keep the handle alive so the directory remains registered.
+    _dll_directory = os.add_dll_directory(str(renderer_dir / "libs"))
+
+    lib = ctypes.CDLL(str(renderer_dir / "bin" / "Heligym.dll"))    
+    #lib = ctypes.cdll.LoadLibrary(os.environ['HELIGYM_PYTHON_DIR'] + '/Heligym.dll')
+
 elif sys.platform == 'linux':
-    lib = ctypes.cdll.LoadLibrary(os.environ['HELIGYM_PYTHON_DIR'] + '/libHeligym.so')
+    lib = ctypes.CDLL(str(renderer_dir / "bin" / "libHeligym.so"))    
+    #lib = ctypes.cdll.LoadLibrary(os.environ['HELIGYM_PYTHON_DIR'] + '/libHeligym.so')
 
 ###################################################################################
 def _to_encode(str_to_encode, encode_type = 'utf-8'):
@@ -44,10 +55,13 @@ def render(window):
 
 def set_control_bars(window, values):
     """Copy four signed control values to the native renderer."""
+    
     try:
         setter = lib.set_control_bars
     except AttributeError as exc:
-        raise RuntimeError("Rebuild the native renderer to enable control bars.") from exc
+        #print("Rebuild the native renderer to enable control bars.")
+        return
+    
     setter.argtypes = [ctypes.c_void_p] + [ctypes.c_float] * 4
     setter.restype = None
     setter(window, *values)
@@ -62,7 +76,10 @@ def wait_events():
 
 def get_key_presses(window):
     """Drain ordered key presses collected during rendering."""
-    pop = lib.pop_key_press
+    try:
+        pop = lib.pop_key_press
+    except:
+        return []
     pop.argtypes = [ctypes.c_void_p]
     pop.restype = ctypes.c_int
     names = {80: 'p', 82: 'r', 88: 'x', 90: 'z', 83: 's', 81: 'q', 68: 'd',
@@ -227,7 +244,9 @@ def update_helicopter_camera(window, north, east, down, bearing):
     try:
         update = lib.update_helicopter_camera
     except AttributeError as exc:
-        raise RuntimeError("Rebuild the native renderer to enable chase view.") from exc
+        #print("Rebuild the native renderer to enable chase view.")
+        return
+    
     update.argtypes = [ctypes.c_void_p] + [ctypes.c_float] * 4
     update.restype = None
     update(window, north, east, down, bearing)

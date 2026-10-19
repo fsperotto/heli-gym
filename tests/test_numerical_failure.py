@@ -32,6 +32,8 @@ class NumericalFailureTests(unittest.TestCase):
         self.assertFalse(truncated)
         self.assertTrue(info['failed'])
         self.assertTrue(info['numerical_failure'])
+        self.assertEqual(self.env.step_count, 1)
+        self.assertEqual(self.env.current_reward, reward)
         self.assertTrue(np.isfinite(self.env.heli_dyn.state.val).all())
         # Reset must recover even after a partially completed integration step.
         obs, _ = self.env.reset()
@@ -88,9 +90,22 @@ class NumericalFailureTests(unittest.TestCase):
         observation, _, _, _, _ = self.env.step(action)
         np.testing.assert_array_equal(observation[-self.env.heli_dyn.n_act:], action)
 
+    def test_simulation_metrics_follow_steps_and_reset(self):
+        self.assertEqual(self.env.step_count, 0)
+        self.assertEqual(self.env.current_reward, 0.0)
+        for step in (1, 2):
+            _, reward, _, _, _ = self.env.step(self.action)
+            self.assertEqual(self.env.step_count, step)
+            self.assertEqual(self.env.current_reward, reward)
+        self.env.reset()
+        self.assertEqual(self.env.step_count, 0)
+        self.assertEqual(self.env.current_reward, 0.0)
+
     def test_invalid_actions_are_rejected(self):
         with self.assertRaises(ValueError):
             self.env.step(np.full(4, np.nan))
+        self.assertEqual(self.env.step_count, 0)
+        self.assertEqual(self.env.current_reward, 0.0)
 
 
 if __name__ == '__main__':

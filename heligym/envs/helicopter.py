@@ -149,6 +149,8 @@ class Heli(gym.Env, EzPickle):
                                 "a": self.heli_dyn.gravity
                             }
         
+        self.step_count = 0
+        self.current_reward = 0.0
         self.renderer = None
         if render_mode == "human":
             from .heli_render import HeliRender
@@ -220,6 +222,13 @@ class Heli(gym.Env, EzPickle):
             observation=self.heli_dyn.observation,
             action=self.heli_dyn.action,
             paused=self.paused,
+            step=self.step_count,
+            reward=self.current_reward,
+            wind_enabled=self.wind_enabled,
+            wind_speed=self.wind_dyn.wind_speed,
+            wind_direction=np.rad2deg(self.wind_dyn.wind_dir),
+            turbulence_level=self.wind_dyn.turbulence_level,
+            wind_ned=self.heli_dyn.WIND_NED,
         )
         
     def close(self):
@@ -242,6 +251,7 @@ class Heli(gym.Env, EzPickle):
             raise ValueError("Actions must have the action-space shape and be finite")
         actions = np.clip(actions, self.action_space.low, self.action_space.high)
         self.time_counter += DT
+        self.step_count += 1
         previous_obs = np.copy(self.heli_dyn.observation)
         previous_state = self.heli_dyn.state.val.copy()
         previous_dots = self.heli_dyn.state_dots.val.copy()
@@ -269,12 +279,14 @@ class Heli(gym.Env, EzPickle):
                     'time_up': self._is_time_up(), 'numerical_failure': True,
                     'numerical_failure_reason': str(error)}
             self.previous_action = actions.copy()
-            return self._agent_observation(previous_obs), -100.0, True, False, info
+            self.current_reward = -100.0
+            return self._agent_observation(previous_obs), self.current_reward, True, False, info
         done = info['failed'] or info['successed']
         truncated = info['time_up']
         self.successed_time += DT if successed_step else 0
         self.previous_action = actions.copy()
-        return self._agent_observation(observation), float(reward), bool(done), bool(truncated), info
+        self.current_reward = float(reward)
+        return self._agent_observation(observation), self.current_reward, bool(done), bool(truncated), info
 
     def _agent_observation(self, dynamics_observation):
         """Append the last direct policy action to the dynamics observation."""
@@ -289,6 +301,8 @@ class Heli(gym.Env, EzPickle):
             np.random.seed(seed)
         self.paused = False
         self.time_counter = 0
+        self.step_count = 0
+        self.current_reward = 0.0
         self.successed_time = 0
         self.wind_dyn.reset()
         # Trim in the same mean wind as on construction, never in the previous

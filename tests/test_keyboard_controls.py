@@ -31,8 +31,14 @@ class KeyboardControlsTests(unittest.TestCase):
             spec.loader.exec_module(module)
         self.env = module.Heli.__new__(module.Heli)
         self.env.paused = False
+        self.env.step_count = 12
+        self.env.current_reward = -0.5
+        self.env.wind_enabled = True
+        self.env.wind_dyn = SimpleNamespace(wind_speed=12, wind_dir=np.pi / 2,
+                                            turbulence_level=3)
         self.env.heli_dyn = SimpleNamespace(
-            action=np.zeros(4), observation=np.zeros(17), state={}, n_act=4
+            action=np.zeros(4), observation=np.zeros(17), state={}, n_act=4,
+            WIND_NED=np.array([1, 12, 0], dtype=np.float32)
         )
         self.env.previous_action = np.zeros(4, dtype=np.float32)
         self.env.renderer = Mock()
@@ -91,6 +97,13 @@ class KeyboardControlsTests(unittest.TestCase):
             observation=self.env.heli_dyn.observation,
             action=self.env.heli_dyn.action,
             paused=True,
+            step=12,
+            reward=-0.5,
+            wind_enabled=True,
+            wind_speed=12,
+            wind_direction=90,
+            turbulence_level=3,
+            wind_ned=self.env.heli_dyn.WIND_NED,
         )
 
     def test_demo_keeps_servicing_window_but_skips_physics_while_paused(self):
@@ -145,6 +158,8 @@ class KeyboardControlsTests(unittest.TestCase):
         actions = self.env.process_keyboard(np.ones(4))
         self.assertFalse(self.env.paused)
         self.assertEqual(self.env.time_counter, 0)
+        self.assertEqual(self.env.step_count, 0)
+        self.assertEqual(self.env.current_reward, 0.0)
         self.assertEqual(self.env.successed_time, 0)
         self.env.wind_dyn.reset.assert_called_once()
         self.env.heli_dyn.reset.assert_called_once_with(self.env.trim_cond)

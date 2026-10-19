@@ -89,6 +89,34 @@ class HeliStabilize(Heli):
         success_step = speed < 0.5 and angular_speed < 0.01 and inclination < np.deg2rad(1.0)
         return float(reward), bool(success_step)
 
+class _SmoothActions:
+    """Add a quadratic cost on changes in the four normalized controls.
+
+    Dynamics hold the current clipped action when rewards are calculated;
+    previous_action still holds the preceding step (or reset trim controls).
+    """
+
+    def __init__(self, *args, smoothness_weight=1.0, **kwargs):
+        if not np.isfinite(smoothness_weight) or smoothness_weight < 0:
+            raise ValueError('smoothness_weight must be finite and nonnegative')
+        self.smoothness_weight = float(smoothness_weight)
+        super().__init__(*args, **kwargs)
+
+    def _calculate_reward(self):
+        reward, success_step = super()._calculate_reward()
+        delta = self.heli_dyn.action - self.previous_action
+        penalty = self.smoothness_weight * np.dot(delta, delta)
+        return float(reward - penalty), success_step
+
+
+class HeliSmoothStabilize(_SmoothActions, HeliStabilize):
+    """Stabilize while penalizing successive control changes."""
+
+
+class HeliSmoothHover(_SmoothActions, HeliHover):
+    """Hold the hover target while penalizing successive control changes."""
+
+
 class HeliForwardFlight(Heli):
 
     def __init__(self, heli_name:str = "aw109", render_mode="human",
