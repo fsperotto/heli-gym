@@ -37,6 +37,27 @@ class ConfigurationTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_wind_toggle_restores_settings_without_changing_aircraft_state(self):
+        env = heligym.Heli(render_mode=None, wind_enabled=False,
+                           wind_direction=90., wind_speed=12.)
+        try:
+            env.reset(seed=42)
+            state = env.heli_dyn.state.val.copy()
+            env.toggle_wind()
+            self.assertTrue(env.wind_enabled)
+            np.testing.assert_allclose(env.heli_dyn.WIND_NED, [0., 12., 0.], atol=1e-6)
+            np.testing.assert_array_equal(env.heli_dyn.state.val, state)
+            env.toggle_wind()
+            self.assertFalse(env.wind_enabled)
+            np.testing.assert_array_equal(env.heli_dyn.WIND_NED, np.zeros(3))
+            env.step(env.heli_dyn.action.copy())
+            np.testing.assert_array_equal(env.heli_dyn.WIND_NED, np.zeros(3))
+            env.toggle_wind()
+            env.reset(seed=42)
+            np.testing.assert_allclose(env.heli_dyn.WIND_NED, [0., 12., 0.], atol=1e-6)
+        finally:
+            env.close()
+
 
 if __name__ == "__main__":
     unittest.main()

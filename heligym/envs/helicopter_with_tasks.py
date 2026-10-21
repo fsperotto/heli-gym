@@ -54,12 +54,71 @@ class HeliHover(Heli):
         return reward, success_step
 
 
-class HeliStabilize(Heli):
-    """Reward level, motionless flight and strongly discourage crashes."""
+class HeliGoto(HeliHover):
+    """Pursue a sequence of random, observed position targets."""
 
-    CRASH_REWARD = -10_000.0
-    MOTION_WEIGHT = 1.0
-    INCLINATION_WEIGHT = 100.0
+    def __init__(self, *args, target_horizontal_range=100.0,
+                 target_altitude_range=50.0, target_radius=10.0,
+                 target_ground_clearance=50.0, **kwargs):
+        values = (target_horizontal_range, target_altitude_range,
+                  target_radius, target_ground_clearance)
+        if not all(np.isfinite(value) and value > 0 for value in values):
+            raise ValueError('Goto target ranges, radius, and clearance must be positive and finite')
+        if target_horizontal_range <= target_radius:
+            raise ValueError('Goto horizontal range must exceed target radius')
+        self.target_horizontal_range = float(target_horizontal_range)
+        self.target_altitude_range = float(target_altitude_range)
+        self.target_radius = float(target_radius)
+        self.target_ground_clearance = float(target_ground_clearance)
+        self.targets_reached = 0
+        super().__init__(*args, **kwargs)
+        # No speed objective; the target speed observation mirrors current speed.
+        self.set_target()
+
+    def _draw_target(self):
+        position = self.heli_dyn.state['xyz']
+        current = np.array([position[0], position[1], -position[2]])
+        bounds = np.array([self.heli_dyn.north_south_extent,
+                           self.heli_dyn.east_west_extent]) / 2
+        low = np.maximum(current[:2] - self.target_horizontal_range, -bounds + 1.)
+        high = np.minimum(current[:2] + self.target_horizontal_range, bounds - 1.)
+        for _ in range(100):
+            north, east = self.np_random.uniform(low, high)
+            ground = self.heli_dyn.ground_height_at(north, east)
+            altitude = max(current[2] + self.np_random.uniform(
+                -self.target_altitude_range, self.target_altitude_range),
+                ground + self.target_ground_clearance)
+            if np.linalg.norm(np.array([north, east, altitude]) - current) > self.target_radius:
+                self.set_target(dict(north_loc=north, east_loc=east, sea_alt=altitude))
+                return
+        raise RuntimeError('Could not sample a goto target outside the arrival radius')
+
+    def _reset_task(self):
+        self.targets_reached = 0
+        self._draw_target()
+
+    def _update_task(self):
+        position = self.heli_dyn.state['xyz']
+        current = np.array([position[0], position[1], -position[2]])
+        target = np.array([self.task_target[key]
+                           for key in ('north_loc', 'east_loc', 'sea_alt')])
+        if np.linalg.norm(current - target) <= self.target_radius:
+            self.targets_reached += 1
+            self._draw_target()
+
+    def _is_successed(self):
+        # Reaching a waypoint starts the next leg instead of ending the episode.
+        return False
+
+    def _get_info(self):
+        info = super()._get_info()
+        info['targets_reached'] = self.targets_reached
+        info['target_position'] = self._render_target_position()
+        return info
+
+
+class HeliStabilize(Heli):
+    """Reward stopping linear and angular motion at any position or attitude."""
 
     def __init__(self, heli_name: str = "aw109", render_mode="human",
                  wind_enabled=True, **heli_kwargs):
@@ -68,35 +127,24 @@ class HeliStabilize(Heli):
         self.set_max_time(self.default_max_time)
 
     def _calculate_reward(self):
-        altitude = -self.heli_dyn.state["xyz"][2]
-        if self.heli_dyn._does_hit_ground(altitude):
-            return self.CRASH_REWARD, False
-
         linear_velocity = self.heli_dyn.state["uvw"] / self.normalizers["v"]
         angular_velocity = self.heli_dyn.state["pqr"] * self.normalizers["t"]
-        roll_pitch = self.heli_dyn.state["euler"][:2]
-
-        motion_penalty = self.MOTION_WEIGHT * (
-            np.dot(linear_velocity, linear_velocity)
-            + np.dot(angular_velocity, angular_velocity)
-        )
-        inclination_penalty = self.INCLINATION_WEIGHT * np.dot(roll_pitch, roll_pitch)
-        reward = -(motion_penalty + inclination_penalty)
+        velocities = np.concatenate((linear_velocity, angular_velocity))
+        reward = -np.mean(velocities ** 2)
 
         speed = np.linalg.norm(self.heli_dyn.state["uvw"])
         angular_speed = np.linalg.norm(self.heli_dyn.state["pqr"])
-        inclination = np.linalg.norm(roll_pitch)
-        success_step = speed < 0.5 and angular_speed < 0.01 and inclination < np.deg2rad(1.0)
+        success_step = speed < 0.5 and angular_speed < 0.01
         return float(reward), bool(success_step)
 
 class _SmoothActions:
-    """Add a quadratic cost on changes in the four normalized controls.
+    """Penalize mean squared control changes and magnitudes relative to zero.
 
     Dynamics hold the current clipped action when rewards are calculated;
     previous_action still holds the preceding step (or reset trim controls).
     """
 
-    def __init__(self, *args, smoothness_weight=1.0, **kwargs):
+    def __init__(self, *args, smoothness_weight=0.25, **kwargs):
         if not np.isfinite(smoothness_weight) or smoothness_weight < 0:
             raise ValueError('smoothness_weight must be finite and nonnegative')
         self.smoothness_weight = float(smoothness_weight)
@@ -105,7 +153,8 @@ class _SmoothActions:
     def _calculate_reward(self):
         reward, success_step = super()._calculate_reward()
         delta = self.heli_dyn.action - self.previous_action
-        penalty = self.smoothness_weight * np.dot(delta, delta)
+        magnitude = self.heli_dyn.action
+        penalty = self.smoothness_weight * np.mean(delta ** 2 + magnitude ** 2)
         return float(reward - penalty), success_step
 
 

@@ -12,11 +12,16 @@ class HeliRenderTests(unittest.TestCase):
     def setUp(self):
         self.native = Mock()
         self.native.create_model.side_effect = ["helicopter", "terrain", "sky"]
-        self.native.create_guiText.side_effect = [1, 2, 3, 4, 5]
+        self.native.create_guiText.side_effect = [1, 2, 3, 4, 5, 6]
         self.native.is_close.return_value = False
         self.native.is_visible.return_value = False
         self.native.get_fps.return_value = 50.0
         self.renderer = HeliRender(native_renderer=self.native)
+        panels = {call.args[0]: call.args[1:3] for call in self.native.create_guiText.call_args_list}
+        self.assertEqual(panels['Observations'][0], panels['Wind'][0])
+        self.assertEqual(panels['Wind'][0], panels['Task target'][0])
+        self.assertLess(panels['Observations'][1], panels['Wind'][1])
+        self.assertLess(panels['Wind'][1], panels['Task target'][1])
         self.native.reset_mock()
         self.state = {
             "betas": np.array([0.1, 0.2]),
@@ -70,10 +75,35 @@ class HeliRenderTests(unittest.TestCase):
         self.assertIs(self.renderer.wind_values, wind_values)
         np.testing.assert_array_equal(wind_values, np.zeros(8))
 
-    def test_paused_render_only_services_events(self):
+    def test_target_marker_uses_north_east_down_coordinates(self):
+        self.native.create_model.side_effect = None
+        self.native.create_model.return_value = 'target'
+        target = np.array([100., 200., 300., 0.])
+        self.renderer.render(self.state, self.observation, self.action,
+                             target=target, target_position=target[:3])
+        np.testing.assert_array_equal(self.renderer.target_values, target)
+        self.native.translate_model.assert_any_call(
+            'target', 100. * FT2MTR, 200. * FT2MTR, -300. * FT2MTR)
+        self.native.add_instantanous_object_to_window.assert_called_once_with('target')
+        self.renderer.render(self.state, self.observation, self.action,
+                             target=target, target_position=target[:3])
+        self.native.create_model.assert_called_once()
+
+    def test_gui_indicates_active_pilot(self):
+        values = self.renderer.command_values
+        self.renderer.render(self.state, self.observation, self.action, pilot_mode='agent')
+        self.assertEqual(values[0], 1.)
+        self.native.set_guiText_row_count.assert_called_with(
+            self.renderer.command_id, self.renderer.common_command_rows)
+        self.renderer.render(self.state, self.observation, self.action, pilot_mode='manual')
+        self.assertEqual(values[0], 0.)
+        self.native.set_guiText_row_count.assert_called_with(self.renderer.command_id, -1)
+        self.assertIs(self.renderer.command_values, values)
+
+    def test_paused_render_services_events_and_redraws_without_physics(self):
         self.renderer.render(self.state, self.observation, self.action, paused=True)
         self.native.wait_events.assert_called_once()
-        self.native.render.assert_not_called()
+        self.native.render.assert_called_once()
 
     def test_close_releases_native_renderer(self):
         self.renderer.close()

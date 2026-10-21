@@ -250,7 +250,7 @@ void Window::renderGUI()
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    for (int s = 0; s < this->v_guiTextSection.size(); s++)
+    for (int s = 0; s < this->v_guiTextSection.size() && this->show_info; s++)
     {
         // Set window position and size.
         ImGui::SetNextWindowPos(this->v_guiTextSection[s]->position);
@@ -261,7 +261,9 @@ void Window::renderGUI()
         
         ImGui::Begin(this->v_guiTextSection[s]->title.c_str());
         
-        for (int i = 0; i < v_guiText.size(); i++)
+        for (int i = 0; i < v_guiText.size() &&
+             (this->v_guiTextSection[s]->visible_rows < 0 ||
+              i < this->v_guiTextSection[s]->visible_rows); i++)
         {
             ImGui::Text(v_guiText[i].str, *v_guiText[i].val);
         }
@@ -269,7 +271,7 @@ void Window::renderGUI()
         ImGui::End();
     }
 
-    if (this->show_control_bars)
+    if (this->show_control_bars && this->show_info)
         this->render_control_bars();
 
     // Render the gui.
@@ -298,10 +300,13 @@ void Window::static_key_callback(GLFWwindow* window, int key, int scancode, int 
     }
     switch (key)
     {
+        case GLFW_KEY_H:
+            owner->show_info = !owner->show_info;
+            break;
         case GLFW_KEY_V:
             owner->follow_helicopter_bearing = !owner->follow_helicopter_bearing;
             break;
-        case GLFW_KEY_P: case GLFW_KEY_R: case GLFW_KEY_X: case GLFW_KEY_Z: case GLFW_KEY_S:
+        case GLFW_KEY_T: case GLFW_KEY_W: case GLFW_KEY_M: case GLFW_KEY_P: case GLFW_KEY_R: case GLFW_KEY_X: case GLFW_KEY_Z: case GLFW_KEY_S:
         case GLFW_KEY_Q: case GLFW_KEY_D:
         case GLFW_KEY_UP: case GLFW_KEY_DOWN:
         case GLFW_KEY_LEFT: case GLFW_KEY_RIGHT:
@@ -510,3 +515,8 @@ void Window::set_guiText(int v_guiText_ind, float* val)
     }
 }
 
+
+void Window::set_guiText_row_count(int section, int count)
+{
+    this->v_guiTextSection.at(section)->visible_rows = count;
+}

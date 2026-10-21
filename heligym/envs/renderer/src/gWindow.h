@@ -32,6 +32,7 @@ struct guiTextSection
     std::string title;
     ImVec2 position;
     ImVec2 size;
+    int visible_rows = -1;
 };
 
 // Class for GLFW-Window.
@@ -81,6 +82,7 @@ public:
 
     // Camera class.
     Camera* camera;
+    bool show_info = true;
     bool follow_helicopter_bearing = false;
     void update_helicopter_camera(float north, float east, float down, float bearing);
 
@@ -120,6 +122,7 @@ public:
 
     // Setting guiText for Dear ImGui.
     void set_guiText(int v_guiText_ind, float* val);
+    void set_guiText_row_count(int section, int count);
 
     // Adding model as permanent drawable objects of the Window.
     // It drawing the model until the window closed.

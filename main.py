@@ -25,11 +25,12 @@ Tasks:
         Reach and maintain 100 ft/s at 2,000 ft sea altitude
         while minimizing body angular rates.
     stabilize
-        Keep the helicopter motionless and level. Motion is penalized, tilt is
-        penalized heavily, and crashing receives a severe penalty.
+        Stop linear and angular motion at any position or attitude.
     smooth-stabilize, smooth-hover
-        Use the corresponding base task with an additional sum-of-squares
-        penalty on changes in the four normalized actions between steps.
+        Add a weighted mean-square penalty on control changes and magnitudes.
+    goto
+        Pursue random north/east/altitude targets supplied in the observation.
+        Reaching a target draws the next one without ending the episode.
     heli
         Use the base helicopter environment. It has no task goal or shaped
         reward; reward remains zero until failure or the episode time limit.
@@ -115,13 +116,15 @@ def parse_args(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('commands', nargs='*', metavar='COMMAND',
                         help='train, eval, plot, render; selected stages run in that order (default: all four)')
+    parser.add_argument('--manual', action='store_true',
+                        help='render with keyboard controls only, without loading a policy; defaults to render when no command is given')
     environment = parser.add_argument_group('Environment')
     environment.add_argument('--heli-name', 
                         default='aw109',
                         help='helicopter configuration name in heligym/envs/config/helis, or path to a YAML configuration (default: aw109)')
     environment.add_argument('--task',
                         choices=['hover', 'smooth-hover', 'forward-flight', 'forward',
-                                 'stabilize', 'smooth-stabilize', 'heli'],
+                                 'stabilize', 'smooth-stabilize', 'goto', 'heli'],
                         default='hover', 
                         help='environment task; forward is an alias for forward-flight (default: hover); see task descriptions above')
     environment.add_argument('--episode-seconds', 
@@ -135,11 +138,11 @@ def parse_args(argv=None):
                       help='disable steady wind and turbulence during training, evaluation and rendering')
     parser.set_defaults(no_wind=False)
     environment.add_argument('--wind-speed', type=float, default=None,
-                        help='steady wind speed in ft/s; uses the environment default if unspecified; ignored when wind is disabled')
+                        help='steady wind speed in ft/s; uses the environment default if unspecified; retained for W reactivation when wind is disabled')
     environment.add_argument('--wind-direction', type=float, default=None,
-                        help='wind vector direction in degrees clockwise from north (0 north, 90 east); uses the environment default if unspecified; ignored when wind is disabled')
+                        help='wind vector direction in degrees clockwise from north (0 north, 90 east); uses the environment default if unspecified; retained for W reactivation when wind is disabled')
     environment.add_argument('--turbulence-level', type=int, choices=range(1, 8), default=None,
-                        help='turbulence intensity from 1 (lightest) to 7 (strongest); uses the environment default if unspecified; ignored when wind is disabled')
+                        help='turbulence intensity from 1 (lightest) to 7 (strongest); uses the environment default if unspecified; retained for W reactivation when wind is disabled')
     environment.add_argument('--no-online-normalization', 
                         action='store_true',
                         help='disable SB3 online observation and reward normalization during training (based on running means and variances) and skip loading observation statistics for evaluation; disabling it is not recommended for PPO/A2C, but may be useful for SAC/TD3/DDPG')
@@ -282,12 +285,14 @@ def parse_args(argv=None):
     if unknown_commands:
         parser.error('unknown command(s): ' + ', '.join(sorted(unknown_commands))
                      + '; choose from ' + ', '.join(COMMANDS))
+    if args.manual and not args.commands:
+        args.commands = ['render']
     commands = [command for command in COMMANDS
                 if not args.commands or command in args.commands]
     # Reuse the training configuration for independent evaluation/rendering.
     # Parsing again preserves explicit CLI overrides, including --algorithm.
     saved_settings = args.target_dir / 'arguments.json'
-    if 'train' not in commands and any(c in commands for c in ('eval', 'render')) and saved_settings.is_file():
+    if 'train' not in commands and ('eval' in commands or ('render' in commands and not args.manual)) and saved_settings.is_file():
         config = json.loads(saved_settings.read_text())
         run_fields = ('algorithm', 'task', 'heli_name', 'episode_seconds',
                       'no_wind', 'wind_speed', 'wind_direction', 'turbulence_level',
@@ -301,11 +306,10 @@ def parse_args(argv=None):
         parser.error('learning rate and episode seconds must be positive; gamma must be in [0, 1]')
     if args.learning_starts < 0 or args.gradient_steps < -1 or args.action_noise < 0:
         parser.error('learning starts/noise must be nonnegative; gradient steps must be >= -1')
-    if not args.no_wind:
-        if args.wind_speed is not None and (not math.isfinite(args.wind_speed) or args.wind_speed < 0):
-            parser.error('--wind-speed must be finite and nonnegative')
-        if args.wind_direction is not None and not math.isfinite(args.wind_direction):
-            parser.error('--wind-direction must be finite')
+    if args.wind_speed is not None and (not math.isfinite(args.wind_speed) or args.wind_speed < 0):
+        parser.error('--wind-speed must be finite and nonnegative')
+    if args.wind_direction is not None and not math.isfinite(args.wind_direction):
+        parser.error('--wind-direction must be finite')
     # These are supplied by the runner, rather than algorithm hyperparameters.
     reserved = {'policy', 'env', 'seed', 'device', 'verbose', 'tensorboard_log'}
     if reserved.intersection(args.algo_kwargs):
@@ -314,24 +318,25 @@ def parse_args(argv=None):
 
 
 def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
-             wind_speed=None, wind_direction=None, turbulence_level=None):
+             wind_speed=None, wind_direction=None, turbulence_level=None, monitor=True):
     """Construct each worker locally so no native objects cross process boundaries."""
     import heligym
-    from stable_baselines3.common.monitor import Monitor
     classes = {'hover': heligym.HeliHover, 'forward': heligym.HeliForwardFlight,
                'forward-flight': heligym.HeliForwardFlight,
                'stabilize': heligym.HeliStabilize,
                'smooth-stabilize': heligym.HeliSmoothStabilize,
-               'smooth-hover': heligym.HeliSmoothHover, 'heli': heligym.Heli}
-    weather = {}
-    if not no_wind:
-        weather = {key: value for key, value in dict(
-            wind_speed=wind_speed, wind_direction=wind_direction,
-            turbulence_level=turbulence_level).items() if value is not None}
+               'smooth-hover': heligym.HeliSmoothHover, 'goto': heligym.HeliGoto,
+               'heli': heligym.Heli}
+    weather = {key: value for key, value in dict(
+        wind_speed=wind_speed, wind_direction=wind_direction,
+        turbulence_level=turbulence_level).items() if value is not None}
     env = classes[task](heli_name=heli_name, render_mode=render_mode,
                         wind_enabled=not no_wind, **weather)
     env.set_max_time(episode_seconds)
-    return Monitor(env)
+    if monitor:
+        from stable_baselines3.common.monitor import Monitor
+        return Monitor(env)
+    return env
 
 
 def agent_settings(args):
@@ -372,46 +377,99 @@ def agent_settings(args):
 
 def run_episode(model, args, normalization_path, seed, render=False):
     """Run one episode with frozen normalization and original task rewards."""
+    import numpy as np
+    if render and args.manual:
+        model = None
+    if model is None and not render:
+        raise ValueError('Evaluation requires an agent')
+    normalize = model is not None and not args.no_online_normalization
     label = 'Creating GUI environment and loading graphics' if render else f'Creating evaluation environment (seed {seed})'
     with progress(label, multiline=render):
-        from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
         from heligym.envs.helicopter import DT
         factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
                           render_mode='human' if render else None, no_wind=args.no_wind,
                           wind_speed=args.wind_speed, wind_direction=args.wind_direction,
                           turbulence_level=args.turbulence_level)
-        env = DummyVecEnv([factory])
+        if model is None:
+            env = factory(monitor=False)
+            raw_env = env
+        else:
+            from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+            env = DummyVecEnv([factory])
+            raw_env = env.envs[0]
     try:
-        reset_label = ('Resetting the helicopter' if args.no_online_normalization else
-                       'Loading normalization statistics and resetting the helicopter')
+        reset_label = ('Loading normalization statistics and resetting the helicopter' if normalize
+                       else 'Resetting the helicopter')
         with progress(reset_label):
-            if not args.no_online_normalization:
+            if normalize:
                 env = VecNormalize.load(str(normalization_path), env)
                 env.training = False
                 env.norm_reward = False
-            env.seed(seed)
-            obs = env.reset()
-            helicopter = env.envs[0].unwrapped
+            if model is None:
+                obs, _ = raw_env.reset(seed=seed)
+                obs = obs[None, :]
+            else:
+                env.seed(seed)
+                obs = env.reset()
+            helicopter = raw_env.unwrapped
+            manual = model is None
+            helicopter.pilot_mode = 'manual' if manual else 'agent'
         total_reward = 0.0
         steps = 0
         terminated = truncated = False
         if render:
-            log_status('GUI ready: P pauses/resumes playback; Esc closes the window.')
+            log_status(f'GUI ready: pilot={helicopter.pilot_mode}; M switches pilot when an agent is available; P pauses/resumes; Esc closes.')
             helicopter.render()
         while not render or not helicopter.renderer.is_close():
+            control_keys = []
+            retrimmed = False
             if render:
-                # Policy playback owns the controls; only consume pause/resume
-                # here, without applying manual controls or resetting physics.
                 for key in helicopter.renderer.get_key_presses():
-                    if key == 'p':
+                    if key == 'm' and model is not None:
+                        manual = not manual
+                        helicopter.pilot_mode = 'manual' if manual else 'agent'
+                        log_status(f'Pilot: {helicopter.pilot_mode}')
+                    elif key == 't':
+                        try:
+                            raw_obs = helicopter.trim_at_current_position()
+                            obs = raw_obs[None, :]
+                            if normalize:
+                                obs = env.normalize_obs(obs)
+                            control_keys.clear()
+                            retrimmed = True
+                        except RuntimeError as error:
+                            log_status(str(error))
+                    elif key == 'w':
+                        helicopter.toggle_wind()
+                    elif key == 'p':
                         helicopter.paused = not helicopter.paused
-                if helicopter.paused:
-                    helicopter.render()  # Wait for events without advancing physics.
+                    elif manual and key == 'r':
+                        raw_obs, _ = raw_env.reset()
+                        obs = raw_obs[None, :]
+                        if normalize:
+                            obs = env.normalize_obs(obs)
+                        total_reward = 0.0
+                        steps = 0
+                        control_keys.clear()
+                    elif manual:
+                        control_keys.append(key)
+                if manual:
+                    # Keep held commands through pause and agent/manual transitions.
+                    delta = helicopter.process_keyboard(keys=control_keys)
+                    helicopter.heli_dyn.action = np.clip(
+                        helicopter.heli_dyn.action + delta,
+                        helicopter.action_space.low, helicopter.action_space.high)
+                if helicopter.paused or retrimmed:
+                    helicopter.render()
                     continue
             start = time.perf_counter()
-            action, _ = model.predict(obs, deterministic=True)
+            if manual:
+                action = helicopter.heli_dyn.action.copy()
+            else:
+                predicted, _ = model.predict(obs, deterministic=True)
+                action = predicted[0]
             # Bypass VecEnv auto-reset to preserve the terminal frame and reward.
-            raw_obs, reward, terminated, truncated, _ = env.envs[0].step(action[0])
+            raw_obs, reward, terminated, truncated, _ = raw_env.step(action)
             total_reward += float(reward)
             steps += 1
             if render:
@@ -419,7 +477,7 @@ def run_episode(model, args, normalization_path, seed, render=False):
             if terminated or truncated:
                 break
             obs = raw_obs[None, :]
-            if not args.no_online_normalization:
+            if normalize:
                 obs = env.normalize_obs(obs)
             if render:
                 time.sleep(max(0.0, DT - (time.perf_counter() - start)))
@@ -436,7 +494,7 @@ def evaluate(model, args, normalization_path):
     log_status(f'Evaluating {args.eval_episodes} deterministic episodes without rendering')
     episodes = []
     for index in range(args.eval_episodes):
-        result = run_episode(model, args, normalization_path,
+        result = run_episode(None if args.manual else model, args, normalization_path,
                              args.seed + args.n_envs + index)
         episodes.append(result)
         print(f"Evaluation {index + 1}/{args.eval_episodes}: "
@@ -582,7 +640,7 @@ def main(argv=None):
         with progress('Preparing renderer library paths', multiline=True):
             prepare_renderer()
 
-    if any(command in args.commands for command in ('train', 'eval', 'render')):
+    if any(command in args.commands for command in ('train', 'eval')) or ('render' in args.commands and not args.manual):
         with progress('Importing PyTorch'):
             import torch
         with progress('Importing Stable Baselines3'):
@@ -601,12 +659,12 @@ def main(argv=None):
             if command == 'train':
                 model = train(algorithm, args)
             elif command in ('eval', 'render'):
-                if model is None:
+                if model is None and (command == 'eval' or not args.manual):
                     model = load_model(algorithm, args)
                 if command == 'eval':
                     evaluate(model, args, normalization_path)
                 else:
-                    result = run_episode(model, args, normalization_path,
+                    result = run_episode(None if args.manual else model, args, normalization_path,
                                          args.seed + args.n_envs, render=True)
                     print(f"Rendered episode: steps={result['steps']}, return={result['reward']:.3f}")
             elif command == 'plot':

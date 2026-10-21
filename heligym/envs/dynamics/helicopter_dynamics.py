@@ -226,11 +226,15 @@ class HelicopterDynamics(DynamicSystem):
         """
         Get the height of the ground from the heightmap at the current (x, y) position.
         """
+        return self.ground_height_at(*self.state['xyz'][:2])
+
+    def ground_height_at(self, north, east):
+        """Terrain sea altitude in feet at a local north/east position."""
         x_ = self.north_south_extent / self.terrain_hmap.shape[0]
         y_ = self.east_west_extent / self.terrain_hmap.shape[1]
 
-        x_loc = (self.state['xyz'][0]) / x_ + self.terrain_hmap.shape[0] // 2
-        y_loc = (self.state['xyz'][1]) / y_ + self.terrain_hmap.shape[1] // 2
+        x_loc = north / x_ + self.terrain_hmap.shape[0] // 2
+        y_loc = east / y_ + self.terrain_hmap.shape[1] // 2
 
         # make sure that get height from hmap
         if x_loc < 0:
@@ -566,11 +570,13 @@ class HelicopterDynamics(DynamicSystem):
                 )
         return state_dots
 
-    def trim(self, params):
+    def trim(self, params, *, tolerance=EPS, require_convergence=False):
         """This function trims the helicopter given the parameters.
         If necessary, user can specify velocity of helicopter in earth frame along with
         yaw_rate which should be deg/sec. Other parameters like rotor azimuths, yaw angle and 
         north east locations and ground altitude can also be specified.
+        Optional strict convergence is used for interactive stationary re-trimming;
+        the default solver tolerance and behavior are preserved for episode resets.
         """
         # First, fix some parameters which are not iterated through trim algorithm.
         # However, these parameters will affect the trim.
@@ -598,7 +604,7 @@ class HelicopterDynamics(DynamicSystem):
         y = self.__trim_fcn(x)
         tol = (y-y_target).transpose()@(y-y_target)
         s_time = time.perf_counter()
-        while tol>EPS:
+        while tol>tolerance:
             dydx = []
             for i in range(n_vars):
                 dxi = np.zeros(n_vars); dxi[i]+=EPS
@@ -620,6 +626,9 @@ class HelicopterDynamics(DynamicSystem):
 
             if (time.perf_counter() - s_time) > 5.0:
                 assert False, "Trim failed, please try a better trim condition!"
+
+        if require_convergence and (not np.isfinite(tol) or tol > tolerance):
+            raise RuntimeError(f'Trim did not converge (residual {tol:g})')
 
         # Finalize the trim algorithm by assigning solved states to the system.
         self.state['vi_mr'] = x[0:1]*self.MR['V_TIP']

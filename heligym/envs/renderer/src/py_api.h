@@ -98,3 +98,5 @@ extern "C" RENDERER_API void rotate_MR(Model* model, float phi, float theta, flo
 
 // Rotate the model Tail Rotor with each angle which are in radians.
 extern "C" RENDERER_API void rotate_TR(Model* model, float phi, float theta, float psi);
+
+extern "C" RENDERER_API void set_guiText_row_count(Window* window, int section, int count);

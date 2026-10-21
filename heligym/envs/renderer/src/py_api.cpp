@@ -182,3 +182,8 @@ void update_helicopter_camera(Window* window, float north, float east, float dow
 {
 	window->update_helicopter_camera(north, east, down, bearing);
 }
+
+void set_guiText_row_count(Window* window, int section, int count)
+{
+    window->set_guiText_row_count(section, count);
+}

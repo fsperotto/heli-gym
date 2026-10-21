@@ -32,6 +32,13 @@ class HeliRender:
         self.sky = self.native.create_model("/resources/models/sky/sky.obj")
         self.native.add_permanent_object_to_window(self.sky)
 
+        self.target_marker = None
+        self.target_text = [
+            "NORTH      : %8.2f ft",
+            "EAST       : %8.2f ft",
+            "ALTITUDE   : %8.2f ft",
+            "SPEED      : %8.2f ft/s",
+        ]
         self.info_text = [
             "POWER      : %5.2f hp",
             "LON_VEL    : %5.2f ft/s",
@@ -73,27 +80,39 @@ class HeliRender:
             "PEDAL      : %6.3f",
         ]
         self.command_text = [
+            "AGENT PILOT: %.0f (0 manual, 1 agent)",
+            "M          : Switch agent / manual (if available)",
             "P          : Pause / resume",
+            "T          : Stop and trim at current position",
+            "W          : Enable / disable wind",
+            "H          : Hide / show info panels",
+            "Esc        : Stop and close window",
+            "V          : Switch fixed / chase view",
+        ]
+        self.common_command_rows = len(self.command_text)
+        self.command_text += [
             "R          : Reset and restart",
             "X          : Set all controls to zero",
-            "Esc        : Stop and close window",
             "Up / Down  : Lon. cyclic +0.2 / -0.2",
             "Right/Left : Lat. cyclic +0.2 / -0.2",
             "Z / S      : Collective  +0.2 / -0.2",
             "D / Q      : Pedals      +0.2 / -0.2",
-            "V          : Switch fixed / chase view",
             "Controls are clipped to [-1, +1]",
             "One change per key press",
         ]
         self.info_id = self.native.create_guiText("Observations", 30.0, 30.0, 250.0, 0.0)
         self.action_id = self.native.create_guiText("Actions", 300.0, 30.0, 250.0, 0.0)
         self.simulation_id = self.native.create_guiText("Simulation", 300.0, 160.0, 250.0, 0.0)
-        self.wind_id = self.native.create_guiText("Wind", 300.0, 270.0, 250.0, 0.0)
+        self.wind_id = self.native.create_guiText("Wind", 30.0, 370.0, 250.0, 0.0)
         self.command_id = self.native.create_guiText(
             "Command Instructions", 570.0, 30.0, 360.0, 0.0
         )
 
+        self.target_id = self.native.create_guiText("Task target", 30.0, 560.0, 250.0, 0.0)
+
         # Own these arrays because the native GUI retains pointers to them.
+        self.target_values = np.zeros(4, dtype=np.float32)
+        self.native.add_guiText(self.target_id, self.target_text, self.target_values)
         self.info_values = np.zeros(len(self.info_text), dtype=np.float32)
         self.action_values = np.zeros(4, dtype=np.float32)
         self.simulation_values = np.zeros(len(self.simulation_text), dtype=np.float32)
@@ -107,15 +126,38 @@ class HeliRender:
 
     def render(self, state, observation, action, paused=False, step=0, reward=0.0,
                wind_enabled=False, wind_speed=0.0, wind_direction=0.0,
-               turbulence_level=0, wind_ned=None):
+               turbulence_level=0, wind_ned=None, target=None, target_position=None, pilot_mode='manual'):
         """Draw one snapshot without retaining or modifying the environment."""
         if self.is_close():
             self.close()
             return
         if paused:
             self.wait_events()
-            return
+            if self.is_close():
+                self.close()
+                return
 
+        if target is not None:
+            self.target_values[:] = target
+        else:
+            self.target_values.fill(0.)
+        self.native.set_guiText(self.target_id, self.target_text, self.target_values)
+        if target_position is not None:
+            if self.target_marker is None:
+                self.target_marker = self.native.create_model(
+                    "/resources/models/waypoint/waypoint.obj",
+                    "/resources/shaders/vertex_base.vs",
+                    "/resources/shaders/target_frag.fs",
+                )
+            north, east, altitude = target_position
+            self.native.translate_model(self.target_marker,
+                                        north * FT2MTR, east * FT2MTR, -altitude * FT2MTR)
+            self.native.add_instantanous_object_to_window(self.target_marker)
+
+        self.native.set_guiText_row_count(
+            self.command_id, self.common_command_rows if pilot_mode == 'agent' else -1)
+        self.command_values[0] = float(pilot_mode == 'agent')
+        self.native.set_guiText(self.command_id, self.command_text, self.command_values)
         self.info_values[:] = observation
         self.simulation_values[:] = (self.native.get_fps(), step, reward)
         self.action_values[:] = action

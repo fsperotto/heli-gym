@@ -30,6 +30,7 @@ class KeyboardControlsTests(unittest.TestCase):
                                      '_keyboard_test.renderer.api': renderer}):
             spec.loader.exec_module(module)
         self.env = module.Heli.__new__(module.Heli)
+        self.env.pilot_mode = 'manual'
         self.env.paused = False
         self.env.step_count = 12
         self.env.current_reward = -0.5
@@ -40,6 +41,7 @@ class KeyboardControlsTests(unittest.TestCase):
             action=np.zeros(4), observation=np.zeros(17), state={}, n_act=4,
             WIND_NED=np.array([1, 12, 0], dtype=np.float32)
         )
+        self.env.task_target = {}
         self.env.previous_action = np.zeros(4, dtype=np.float32)
         self.env.renderer = Mock()
 
@@ -104,6 +106,9 @@ class KeyboardControlsTests(unittest.TestCase):
             wind_direction=90,
             turbulence_level=3,
             wind_ned=self.env.heli_dyn.WIND_NED,
+            target=unittest.mock.ANY,
+            target_position=None,
+            pilot_mode='manual',
         )
 
     def test_demo_keeps_servicing_window_but_skips_physics_while_paused(self):
@@ -139,6 +144,16 @@ class KeyboardControlsTests(unittest.TestCase):
         for call in self.env.step.call_args_list:
             np.testing.assert_array_equal(call.args[0], np.zeros(4))
         np.testing.assert_array_equal(self.env.heli_dyn.state['position'], np.zeros(3))
+
+    def test_trim_key_applies_new_controls_before_subsequent_manual_corrections(self):
+        trimmed = np.array([.1, -.2, .3, -.4], dtype=np.float32)
+        self.env.trim_at_current_position = Mock(side_effect=lambda: setattr(
+            self.env.heli_dyn, 'action', trimmed.copy()))
+        self.env.renderer.get_key_presses.return_value = ['z', 't', 'up']
+        delta = self.env.process_keyboard(update_action=True)
+        self.env.trim_at_current_position.assert_called_once()
+        np.testing.assert_allclose(delta, [0, .2, 0, 0])
+        np.testing.assert_allclose(self.env.heli_dyn.action, [.1, 0., .3, -.4], atol=1e-7)
 
     def test_restart_resets_dynamics_timers_and_restores_trim_controls(self):
         self.env.paused = True

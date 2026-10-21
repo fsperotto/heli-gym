@@ -29,6 +29,19 @@ int main()
     Window::static_key_callback(nullptr, GLFW_KEY_R, 0, GLFW_REPEAT, 0);
     Window::static_key_callback(nullptr, GLFW_KEY_X, 0, GLFW_PRESS, 0);
     Window::static_key_callback(nullptr, GLFW_KEY_X, 0, GLFW_REPEAT, 0);
+    Window::static_key_callback(nullptr, GLFW_KEY_M, 0, GLFW_PRESS, 0);
+    Window::static_key_callback(nullptr, GLFW_KEY_M, 0, GLFW_REPEAT, 0);
+    Window::static_key_callback(nullptr, GLFW_KEY_W, 0, GLFW_PRESS, 0);
+    Window::static_key_callback(nullptr, GLFW_KEY_W, 0, GLFW_REPEAT, 0);
+    Window::static_key_callback(nullptr, GLFW_KEY_T, 0, GLFW_PRESS, 0);
+    Window::static_key_callback(nullptr, GLFW_KEY_T, 0, GLFW_REPEAT, 0);
+    assert(window.show_info);
+    Window::static_key_callback(nullptr, GLFW_KEY_H, 0, GLFW_PRESS, 0);
+    assert(!window.show_info);
+    Window::static_key_callback(nullptr, GLFW_KEY_H, 0, GLFW_REPEAT, 0);
+    assert(!window.show_info);
+    Window::static_key_callback(nullptr, GLFW_KEY_H, 0, GLFW_PRESS, 0);
+    assert(window.show_info);
     assert(!window.follow_helicopter_bearing);
     Window::static_key_callback(nullptr, GLFW_KEY_V, 0, GLFW_PRESS, 0);
     assert(window.follow_helicopter_bearing);
@@ -43,8 +56,17 @@ int main()
     assert(pop_key_press(&window) == GLFW_KEY_UP);
     assert(pop_key_press(&window) == GLFW_KEY_R);
     assert(pop_key_press(&window) == GLFW_KEY_X);
+    assert(pop_key_press(&window) == GLFW_KEY_M);
+    assert(pop_key_press(&window) == GLFW_KEY_W);
+    assert(pop_key_press(&window) == GLFW_KEY_T);
     assert(pop_key_press(&window) == GLFW_KEY_Q);
     assert(pop_key_press(&window) == -1);
+
+    int section = window.create_guiText("Commands", ImVec2(), ImVec2());
+    window.set_guiText_row_count(section, 7);
+    assert(window.v_guiTextSection[section]->visible_rows == 7);
+    window.set_guiText_row_count(section, -1);
+    assert(window.v_guiTextSection[section]->visible_rows == -1);
 
     window.camera = new Camera(glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     window.update_helicopter_camera(0.0f, 0.0f, 0.0f, 0.0f);

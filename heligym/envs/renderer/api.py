@@ -283,3 +283,7 @@ class Renderer(object):
         pyapi.set_guiText(self.window, guiText, str, val)
 
     
+
+    def set_guiText_row_count(self, section, count):
+        """Use a negative count to show every row."""
+        pyapi.set_guiText_row_count(self.window, section, count)

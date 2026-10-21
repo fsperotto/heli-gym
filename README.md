@@ -30,20 +30,64 @@ python main.py plot --target-dir runs/hover            # plot saved statistics o
 python main.py render --target-dir runs/hover          # one episode in the GUI
 ```
 
+Each environment observation now contains 25 values, in this order:
+
+- 17 measurements produced by the helicopter dynamics.
+- 4 task targets: local north position, east position, sea altitude (feet), and
+  scalar ground-relative speed (ft/s). North/east are local Cartesian coordinates,
+  not latitude/longitude. Altitude is positive upwards.
+- 4 previous applied control commands.
+
+The task layer adds the targets without modifying the physics observation.
+Unspecified target fields mirror the corresponding current measurement on every
+step; they impose no extra reward objective. Tasks override fields through
+`set_target`, using `north_loc`, `east_loc`, `sea_alt`, and `vel`. Existing hover
+and forward-flight tasks expose their respective configured targets.
+Previously trained 21-value policies and normalization files need retraining for
+this expanded observation space.
+
+Use `--task goto` to pursue a continuing sequence of random position targets.
+It uses the hover reward against the currently active target, without a speed
+objective or smooth-action penalty. On arrival within a 10 ft 3D radius, the
+reward is calculated for the reached target, then a new target is returned in
+the observation. Arrival does not end the episode. Targets are sampled within
+±100 ft north/east and ±50 ft altitude of the current position; altitude is raised
+where necessary to maintain 50 ft clearance above terrain at the target.
+Targets remain within map boundaries and outside the arrival radius. The usual
+failure rules and episode time limit still apply. `info` includes `targets_reached`
+and the active `target_position` (north, east, altitude).
+
+`HeliGoto` accepts `target_horizontal_range`, `target_altitude_range`,
+`target_radius`, and `target_ground_clearance` constructor settings in feet.
+Sampling uses the environment random generator, so `reset(seed=...)` reproduces
+its target sequence. Rendering shows task target values and a translucent cyan 3D marker with dark edges for
+explicit position targets, including hover and goto.
+
+```bash
+python main.py train --task goto --target-dir runs/goto
+```
+
 Use `--task smooth-stabilize` or `--task smooth-hover` to add a control
 smoothness cost to the corresponding task. Each step subtracts
-`sum((action - previous_action)**2)` over the four normalized, clipped controls.
-Large jumps cost more than small corrections; unchanged controls cost zero.
-The first step compares against the reset trim controls, and every reset starts
-a new action history. The previous controls are included in the observation.
-When constructing these environments directly, `smoothness_weight` scales this
-cost (default 1.0; zero recovers the base task reward).
+`lambda * mean((action - previous_action)**2 + action**2)`
+over the four normalized, clipped controls. This penalizes both abrupt changes
+and large command magnitudes relative to zero, without a stored trim reference.
+Holding a nonzero command still incurs a magnitude cost. The change term compares
+against the preceding applied action (the reset controls on the first step).
+Each reset starts a new action history. Previous controls are included in the
+observation.
+When constructing these environments directly, `smoothness_weight` sets lambda
+(default 0.25; zero recovers the base task reward).
 
-`stabilize` penalizes linear/angular velocity and roll/pitch tilt, with a large
-crash cost. `hover` targets north/east position and sea altitude while suppressing
-angular rates; it does not explicitly track a heading. The smooth variants keep
-these base objectives and success conditions. They penalize immediate control
-changes, rather than imposing a hard control-rate limit.
+`stabilize` subtracts the mean square of the six normalized linear/angular
+velocities. It has no position, altitude, heading, roll/pitch, or ground-contact
+reward term: it rewards stopping wherever the helicopter is, allowing tilt to
+compensate wind. Step success requires speed below 0.5 ft/s and angular speed
+below 0.01 rad/s, irrespective of attitude. Ground contact and other simulation
+failure conditions still terminate episodes according to the environment rules.
+`hover` retains its existing position and angular-rate objective. Its two reward
+components are averaged before subtracting the smoothness cost; those components
+are not bounded to magnitude 1. Smoothness costs impose no hard control-rate limit.
 
 ```bash
 python main.py train --task smooth-stabilize --target-dir runs/smooth-stabilize
@@ -75,8 +119,42 @@ without rendering and writes episode returns, lengths, and summary statistics to
 `evaluation.json`; use `--eval-episodes` to change the count. `plot` reads these
 JSON files, saves `learning_curves.png` and/or `evaluation.png`, and displays the
 figures. On a server, set `MPLBACKEND=Agg` to save figures without opening windows.
-`render` shows one deterministic episode at simulator speed. Press **P** to pause
-or resume playback; the window stays responsive while physics is paused.
+`render` starts one agent-piloted episode at simulator speed. Press **M** to switch
+between agent and manual keyboard control. In agent mode, movement/reset keys are
+ignored; in manual mode, the keyboard controls the helicopter. Returning to the
+agent uses the latest observation. Press **P** to pause/resume in either mode;
+the window stays responsive while physics is paused. The GUI indicates the pilot
+mode. The episode ends at the configured time limit or a terminal condition.
+
+Use `--manual` to launch a selected task without any policy, saved normalization,
+or training dependencies. When no positional command is given, `--manual` selects
+`render` alone. It ignores saved run settings and uses the supplied environment
+options and their defaults. **M** has no effect because no agent is loaded.
+
+```bash
+python main.py render --manual --task goto --episode-seconds 1000
+python main.py render --target-dir runs/goto   # agent initially; M toggles manual
+```
+
+Manual controls are **Z/S** (collective), **Up/Down** (longitudinal cyclic),
+**Right/Left** (lateral cyclic), and **D/Q** (pedals), each changing the command
+by 0.2 per key press. **X** zeros the controls; **R** restarts the episode.
+**Esc** closes the window and **V** switches the camera view in either pilot mode.
+**W** toggles wind in either mode, preserving the configured mean speed/direction
+and turbulence settings for reactivation; it does not reset or re-trim the aircraft.
+**T** stops and re-trims the helicopter at its current north/east position and sea
+altitude, preserving heading and rotor phases. Roll and pitch can adjust to find
+stationary equilibrium under the current instantaneous wind. Linear/angular
+velocities and cached accelerations are zeroed, and trim controls become the last
+applied controls in the refreshed observation. Rotor rotation continues normally.
+No episode clock, target, pause state, or pilot mode is reset. The next physics
+step recomputes accelerations; turbulence or an active agent can move the aircraft
+again. If stationary trim cannot converge or requires controls beyond their
+limits, the prior state is restored and an error is printed. This key works in
+both pilot modes and while paused.
+**H** hides/shows all info panels and control bars (shown initially). Both toggles
+also work while paused. The left column stacks Observations, Wind, then Task target.
+Agent mode hides manual flight/reset instructions while retaining shared controls.
 The GUI’s **Simulation** panel shows FPS, the current episode step, and the latest
 unnormalized step reward. Step and reward reset to zero at the start of each episode.
 The **Wind** panel shows whether wind is enabled, mean speed and direction,
@@ -97,7 +175,8 @@ python main.py render --target-dir runs/hover --wind --wind-speed 12 --wind-dire
 
 These settings are saved with the run and restored for independent evaluation
 and rendering. Unspecified values use the environment defaults when no saved
-value exists. When wind is disabled, all three weather overrides are ignored.
+value exists. When wind is disabled, weather settings are retained for reactivation with **W**;
+they have no effect on the aircraft until wind is enabled.
 For older runs without saved settings, supply matching options yourself. Plotting
 requires the new saved episode data; an existing PNG alone cannot recreate it.
 The positional commands replace `--no-learn`, `--no-render`, and `--no-stats-plot`.

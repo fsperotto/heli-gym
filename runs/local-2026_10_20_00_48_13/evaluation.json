@@ -1,0 +1,77 @@
+{
+  "episodes": [
+    {
+      "seed": 52,
+      "steps": 2000,
+      "reward": -2086.570648429332,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 53,
+      "steps": 2000,
+      "reward": -2046.425657902563,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 54,
+      "steps": 2000,
+      "reward": -1869.4634251365194,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 55,
+      "steps": 2000,
+      "reward": -2117.6561326132255,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 56,
+      "steps": 2000,
+      "reward": -1881.0993419676004,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 57,
+      "steps": 2000,
+      "reward": -1991.1082965493533,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 58,
+      "steps": 2000,
+      "reward": -2093.5107121443116,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 59,
+      "steps": 2000,
+      "reward": -1695.21244805907,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 60,
+      "steps": 2000,
+      "reward": -1863.6671944653256,
+      "terminated": false,
+      "truncated": true
+    },
+    {
+      "seed": 61,
+      "steps": 2000,
+      "reward": -1841.4685439268455,
+      "terminated": false,
+      "truncated": true
+    }
+  ],
+  "mean_reward": -1948.6182401194146,
+  "std_reward": 131.79784509611397,
+  "mean_steps": 2000.0
+}

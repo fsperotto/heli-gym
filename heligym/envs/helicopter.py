@@ -59,6 +59,8 @@ class Heli(gym.Env, EzPickle):
 
     # default task target
     default_task_target = {}
+    task_observation_names = ("TARGET_NORTH", "TARGET_EAST", "TARGET_ALTITUDE", "TARGET_SPEED")
+    n_task_obs = len(task_observation_names)
 
     def __init__(self,
                  heli_name:str = "aw109",
@@ -91,6 +93,7 @@ class Heli(gym.Env, EzPickle):
                           gravity=gravity)
 
         self.wind_enabled = wind_enabled
+        self._configured_wind_speed = wind_speed
 
         if render_mode not in (None, "human"):
             raise ValueError("render_mode must be None or human")
@@ -131,9 +134,9 @@ class Heli(gym.Env, EzPickle):
         self.action_space = spaces.Box(-1, +1, (self.heli_dyn.n_act,), dtype=np.float32)
         self.previous_action = np.zeros(self.heli_dyn.n_act, dtype=np.float32)
         self.observation_space = spaces.Box(
-            low=np.concatenate((np.full(self.heli_dyn.n_obs, -np.inf, dtype=np.float32),
+            low=np.concatenate((np.full(self.heli_dyn.n_obs + self.n_task_obs, -np.inf, dtype=np.float32),
                                 self.action_space.low)),
-            high=np.concatenate((np.full(self.heli_dyn.n_obs, np.inf, dtype=np.float32),
+            high=np.concatenate((np.full(self.heli_dyn.n_obs + self.n_task_obs, np.inf, dtype=np.float32),
                                  self.action_space.high)),
             dtype=np.float32,
         )
@@ -157,6 +160,7 @@ class Heli(gym.Env, EzPickle):
             model_name = os.path.splitext(os.path.basename(os.fspath(heli_name)))[0]
             self.renderer = HeliRender(heli_name=model_name, fps=FPS)
         self.paused = False
+        self.pilot_mode = 'manual'
        
     # Setter functions for RL tasks
     def set_max_time(self, max_time=None):
@@ -183,7 +187,67 @@ class Heli(gym.Env, EzPickle):
         self.base_reward_weight = zero_ if base_reward_weight is None else base_reward_weight
         self.terminal_reward_weight = zero_ if terminal_reward_weight is None else terminal_reward_weight
 
-    def process_keyboard(self, actions=None, update_action=False):
+    def toggle_wind(self):
+        """Switch wind in place, preserving configured settings and aircraft state."""
+        self.wind_enabled = not self.wind_enabled
+        self.wind_dyn.wind_speed = self._configured_wind_speed if self.wind_enabled else 0.0
+        self.wind_dyn.wind_mean_ned = self.wind_dyn.wind_speed * np.array(
+            [np.cos(self.wind_dyn.wind_dir), np.sin(self.wind_dyn.wind_dir), 0.], dtype=np.float32)
+        self.wind_dyn.reset()
+        self.heli_dyn.set_wind(self.wind_dyn.wind_mean_ned.copy())
+
+    def trim_at_current_position(self):
+        """Stop aircraft motion and apply stationary trim without resetting the task.
+
+        Keep position, heading, rotor phases, wind, pause state, and episode
+        counters. Trim may adjust roll/pitch and rotor equilibrium states.
+        """
+        dynamics = self.heli_dyn
+        fields = ('state', 'state_dots', 'action', 'observation', 'previous_observation')
+        backup = {name: copy.deepcopy(getattr(dynamics, name)) for name in fields}
+        previous_action = self.previous_action.copy()
+        try:
+            position = dynamics.state['xyz'].copy()
+            params = dict(
+                xy=position[:2].copy(),
+                gr_alt=float(-position[2] - dynamics.ground_touching_altitude()),
+                yaw=float(dynamics.state['euler'][2]), yaw_rate=0.0,
+                ned_vel=[0.0, 0.0, 0.0],
+                psi_mr=float(dynamics.state['psi_mr'][0]),
+                psi_tr=float(dynamics.state['psi_tr'][0]),
+            )
+            with np.errstate(over='raise', invalid='raise', divide='raise'):
+                dynamics.state['uvw'][:] = 0.0
+                dynamics.state['pqr'][:] = 0.0
+                dynamics.state_dots.val[:] = 0.0
+                dynamics.trim(params, tolerance=1e-10, require_convergence=True)
+                # Eliminate numerical velocity residuals from the trim solver.
+                dynamics.state['xyz'][:] = position
+                dynamics.state['uvw'][:] = 0.0
+                dynamics.state['pqr'][:] = 0.0
+                dynamics.state_dots = dynamics.dynamics(dynamics.state, set_observation=True)
+                if not all(np.isfinite(value).all() for value in (
+                        dynamics.state.val, dynamics.state_dots.val,
+                        dynamics.action, dynamics.observation)):
+                    raise ValueError('Trim produced non-finite state or controls')
+                if np.any(dynamics.action < self.action_space.low) or np.any(
+                        dynamics.action > self.action_space.high):
+                    raise ValueError('Stationary trim requires controls outside their limits')
+                # This key is a direct intervention: zero the cached aircraft
+                # accelerations too. Physics computes fresh derivatives next step.
+                dynamics.state_dots['uvw'][:] = 0.0
+                dynamics.state_dots['pqr'][:] = 0.0
+                self.previous_action[:] = dynamics.action
+                dynamics.previous_observation = dynamics.observation.copy()
+                return self._agent_observation(dynamics.observation)
+        except (AssertionError, ArithmeticError, ValueError, RuntimeError,
+                np.linalg.LinAlgError) as error:
+            for name, value in backup.items():
+                setattr(dynamics, name, value)
+            self.previous_action[:] = previous_action
+            raise RuntimeError(f'Could not trim at the current position: {error}') from error
+
+    def process_keyboard(self, actions=None, update_action=False, keys=None):
         """Update manual controls; callers skip step() while paused, but keep rendering."""
         if actions is None:
             #actions = np.array(self.heli_dyn.action, dtype=np.float32, copy=True)
@@ -196,8 +260,17 @@ class Heli(gym.Env, EzPickle):
             'right': (2, 0.2), 'left': (2, -0.2),
             'd': (3, 0.2), 'q': (3, -0.2),
         }
-        for key in self.renderer.get_key_presses():
-            if key == 'p':
+        for key in self.renderer.get_key_presses() if keys is None else keys:
+            if key == 't':
+                try:
+                    self.trim_at_current_position()
+                    actions = self.heli_dyn.action
+                    delta.fill(0.0)
+                except RuntimeError as error:
+                    print(error, file=sys.stderr)
+            elif key == 'w':
+                self.toggle_wind()
+            elif key == 'p':
                 self.paused = not self.paused
             elif key == 'r':
                 self.reset()
@@ -229,6 +302,9 @@ class Heli(gym.Env, EzPickle):
             wind_direction=np.rad2deg(self.wind_dyn.wind_dir),
             turbulence_level=self.wind_dyn.turbulence_level,
             wind_ned=self.heli_dyn.WIND_NED,
+            target=self._task_observation(self.heli_dyn.observation),
+            target_position=self._render_target_position(),
+            pilot_mode=self.pilot_mode,
         )
         
     def close(self):
@@ -270,6 +346,7 @@ class Heli(gym.Env, EzPickle):
                 reward, successed_step = self._calculate_reward()
                 if not np.isfinite(reward):
                     raise FloatingPointError("Non-finite task reward")
+                self._update_task()
                 info = self._get_info()
         except (FloatingPointError, OverflowError, ZeroDivisionError) as error:
             self.heli_dyn.state.val[:] = previous_state
@@ -288,11 +365,36 @@ class Heli(gym.Env, EzPickle):
         self.current_reward = float(reward)
         return self._agent_observation(observation), self.current_reward, bool(done), bool(truncated), info
 
+    def _task_observation(self, dynamics_observation):
+        """Resolve task targets; unspecified values mirror current measurements.
+
+        Positions are local north/east feet and positive-up sea altitude.
+        The fourth component is scalar ground-relative speed in ft/s.
+        """
+        current = (*dynamics_observation[13:16],
+                   np.linalg.norm(dynamics_observation[4:7]))
+        return np.asarray([
+            current[i] if self.task_target.get(key) is None else self.task_target[key]
+            for i, key in enumerate(('north_loc', 'east_loc', 'sea_alt', 'vel'))
+        ], dtype=np.float32)
+
+    def _render_target_position(self):
+        keys = ('north_loc', 'east_loc', 'sea_alt')
+        if all(self.task_target.get(key) is not None for key in keys):
+            return np.asarray([self.task_target[key] for key in keys], dtype=np.float32)
+        return None
+
+    def _reset_task(self):
+        """Initialize episode-specific task state after resetting physics."""
+
+    def _update_task(self):
+        """Update task state after rewarding a successful physics step."""
+
     def _agent_observation(self, dynamics_observation):
-        """Append the last direct policy action to the dynamics observation."""
-        return np.concatenate((dynamics_observation, self.previous_action)).astype(
-            np.float32, copy=False
-        )
+        """Combine physics measurements, task targets, and previous controls."""
+        return np.concatenate((dynamics_observation,
+                               self._task_observation(dynamics_observation),
+                               self.previous_action)).astype(np.float32, copy=False)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -312,6 +414,7 @@ class Heli(gym.Env, EzPickle):
         # The reset state was produced with the trim controls, so expose those
         # controls as the action immediately preceding the first policy step.
         self.previous_action[:] = self.heli_dyn.action
+        self._reset_task()
         return self._agent_observation(self.heli_dyn.observation), self._get_info()
 
     def _get_info(self):

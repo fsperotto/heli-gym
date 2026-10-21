@@ -82,7 +82,7 @@ def get_key_presses(window):
         return []
     pop.argtypes = [ctypes.c_void_p]
     pop.restype = ctypes.c_int
-    names = {80: 'p', 82: 'r', 88: 'x', 90: 'z', 83: 's', 81: 'q', 68: 'd',
+    names = {84: 't', 87: 'w', 77: 'm', 80: 'p', 82: 'r', 88: 'x', 90: 'z', 83: 's', 81: 'q', 68: 'd',
              265: 'up', 264: 'down', 263: 'left', 262: 'right'}
     keys = []
     while True:
@@ -343,3 +343,10 @@ def rotate_TR(model, x, y, z):
         Rotate the model Tail Rotor with each angle which are in radians.
     """
     lib.rotate_TR(model, x, y, z)
+
+
+def set_guiText_row_count(window, section, count):
+    """Limit visible rows without reallocating native GUI buffers."""
+    lib.set_guiText_row_count.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.set_guiText_row_count.restype = None
+    lib.set_guiText_row_count(window, section, count)

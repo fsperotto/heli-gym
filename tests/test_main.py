@@ -267,7 +267,7 @@ class EpisodeTests(unittest.TestCase):
                  (dict(wind_speed=0), 0, DEFAULT_WEATHER['wind_direction'],
                   DEFAULT_WEATHER['turbulence_level'], True),
                  (dict(no_wind=True, wind_speed=12, wind_direction=90, turbulence_level=3),
-                  0, DEFAULT_WEATHER['wind_direction'], DEFAULT_WEATHER['turbulence_level'], False)]
+                  0, 90, 3, False)]
         for kwargs, speed, direction, turbulence, enabled in cases:
             with self.subTest(kwargs=kwargs):
                 env = main.make_env('heli', 'aw109', 1, **kwargs)

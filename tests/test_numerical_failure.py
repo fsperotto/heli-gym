@@ -83,7 +83,7 @@ class NumericalFailureTests(unittest.TestCase):
 
     def test_observation_contains_previous_direct_action(self):
         observation, _ = self.env.reset()
-        self.assertEqual(observation.shape, (self.env.heli_dyn.n_obs + self.env.heli_dyn.n_act,))
+        self.assertEqual(observation.shape, (self.env.heli_dyn.n_obs + self.env.n_task_obs + self.env.heli_dyn.n_act,))
         np.testing.assert_allclose(observation[-self.env.heli_dyn.n_act:],
                                    self.env.heli_dyn.action)
         action = np.array([0.2, -0.3, 0.4, -0.5], dtype=np.float32)
