@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Usage: bash call_srun_learn_job.sh [Python options]
-# Runs train/eval/plot; explicit Python options override launcher defaults.
+# Heli-gym training job launcher for SLURM clusters.
+#   Usage: bash call_srun_learn_job.sh [Python options]
+#   Runs train/eval/plot; explicit Python options override launcher defaults.
 
 ## default SBATCH options for the job
 #SBATCH --job-name=heligym_train
@@ -25,12 +26,18 @@ echo "HELI-GYM training job started at $(date) on ${HOSTNAME}"
 
 # Python supplies its own defaults for other options. Launcher defaults precede
 # user arguments so explicit values win. Wind flags are mutually exclusive.
-DEFAULT_ARGS=(--task hover --n-envs 7 --total-timesteps 1000000
-              --device cuda --torch-threads 1 --n-steps 1024)
+DEFAULT_ARGS=(--task hover 
+              --n-envs 7 
+              --total-timesteps 1000000
+              --device cuda 
+              --torch-threads 1 
+              --n-steps 1024)
+
 HAS_WIND_FLAG=false
 for arg in "$@"; do
     case "$arg" in --wind|--no-wind) HAS_WIND_FLAG=true ;; esac
 done
+
 if [[ "$HAS_WIND_FLAG" == false ]]; then DEFAULT_ARGS+=(--no-wind); fi
 
 JOB_ID=${HOSTNAME}-${SLURM_JOB_ID:-$$}-$(date +%Y-%m-%d_%H-%M-%S)
@@ -40,17 +47,18 @@ echo "Job ID: $JOB_ID"
 #PROJECT_DIR="/stck/${USER}/SourceCode/GITHUB/heli-gym"
 PROJECT_DIR="${HOME}/SourceCode/GITHUB/heli-gym"
 #WORKING_DIR="${/tmp_user/${HOSTNAME}/${USER}}/SourceCode/GITHUB/heli-gym"
-WORKING_DIR="${WORKDIR:-$HOME}/SourceCode/GITHUB/heli-gym"
-RUNNING_DIR="${WORKING_DIR}/runs/$JOB_ID"
+#WORKING_DIR="${WORKDIR:-$HOME}/SourceCode/GITHUB/heli-gym"
+RUNNING_DIR="${WORKDIR}/temp/$JOB_ID"
 ARCHIVE_DIR="${PROJECT_DIR}/runs/$JOB_ID"
 
 echo ;
 echo "Project directory: $PROJECT_DIR"
-echo "Working directory: $WORKING_DIR"
+#echo "Working directory: $WORKING_DIR"
 echo "Running directory: $RUNNING_DIR"
 echo "Archive directory: $ARCHIVE_DIR"
 
-cd "${WORKING_DIR}"
+#cd "${WORKING_DIR}"
+cd "${PROJECT_DIR}"
 
 #activate the virtual environment
 source ./init.sh
@@ -76,6 +84,9 @@ archive_results() {
        ! cp -a "${RUNNING_DIR}/." "${ARCHIVE_DIR}/"; then
         echo "Result archive failed; outputs remain in $RUNNING_DIR" >&2
         status=1
+    else
+        rm -rf "$RUNNING_DIR"
+        echo "Results archived to $ARCHIVE_DIR"
     fi
     exit "$status"
 }

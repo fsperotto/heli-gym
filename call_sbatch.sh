@@ -14,8 +14,8 @@ set -euo pipefail
 
 DATETIME=$(date '+%Y_%m_%d_%H_%M_%S')
 
-PROJ_DIR="${WORKDIR:-$HOME}/SourceCode/GITHUB/heli-gym"
-PROJ_URL="https://github.com/fsperotto/heli-gym.git"
+#proj dir is the directory where this script is located, which should be the root of the heli-gym project.
+PROJ_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Only n-envs affects submission resources. Forward every Python argument intact.
 # Keep the submission default (24) distinct from the standalone job default (7).
@@ -35,12 +35,15 @@ if [[ ! "$N_ENVS" =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 
-if [[ ! -d "$PROJ_DIR" ]]; then
-    export HTTP_PROXY=proxy.onera:80
-    export HTTPS_PROXY=proxy.onera:80
-    mkdir -p "$(dirname "$PROJ_DIR")"
-    git clone "$PROJ_URL" "$PROJ_DIR"
-fi
+#PROJ_DIR="${WORKDIR:-$HOME}/SourceCode/GITHUB/heli-gym"
+#PROJ_URL="https://github.com/fsperotto/heli-gym.git"
+#
+#if [[ ! -d "$PROJ_DIR" ]]; then
+#    export HTTP_PROXY=proxy.onera:80
+#    export HTTPS_PROXY=proxy.onera:80
+#    mkdir -p "$(dirname "$PROJ_DIR")"
+#    git clone "$PROJ_URL" "$PROJ_DIR"
+#fi
 
 mkdir -p "${PROJ_DIR}/logs/$DATETIME"
 
