@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Heli-gym training job launcher for SLURM clusters.
-#   Usage: bash call_srun_learn_job.sh [Python options]
+#   Usage: bash call_srun_learn_job.sh [--partition PARTITION] [--time LIMIT] [Python options]
 #   Runs train/eval/plot; explicit Python options override launcher defaults.
 
 ## default SBATCH options for the job
@@ -24,6 +24,23 @@ HOSTNAME=${HOSTNAME:-$(hostname)}
 
 echo "HELI-GYM training job started at $(date) on ${HOSTNAME}"
 
+# Separate Slurm step options from arguments intended for main.py.
+PYTHON_ARGS=()
+SRUN_ARGS=()
+while (($#)); do
+    case "$1" in
+        --partition|--time)
+            if (($# < 2)) || [[ -z "$2" || "$2" == -* ]]; then
+                echo "Missing value for $1" >&2; exit 2
+            fi
+            SRUN_ARGS+=("$1" "$2"); shift 2 ;;
+        --partition=*|--time=*)
+            [[ -n "${1#*=}" ]] || { echo "Missing value for ${1%%=*}" >&2; exit 2; }
+            SRUN_ARGS+=("$1"); shift ;;
+        *) PYTHON_ARGS+=("$1"); shift ;;
+    esac
+done
+
 # Python supplies its own defaults for other options. Launcher defaults precede
 # user arguments so explicit values win. Wind flags are mutually exclusive.
 DEFAULT_ARGS=(--task hover 
@@ -34,7 +51,7 @@ DEFAULT_ARGS=(--task hover
               --n-steps 1024)
 
 HAS_WIND_FLAG=false
-for arg in "$@"; do
+for arg in "${PYTHON_ARGS[@]}"; do
     case "$arg" in --wind|--no-wind) HAS_WIND_FLAG=true ;; esac
 done
 
@@ -61,7 +78,13 @@ echo "Archive directory: $ARCHIVE_DIR"
 cd "${PROJECT_DIR}"
 
 #activate the virtual environment
-source ./init.sh
+# A sourced script inherits positional arguments. A function called without
+# arguments gives activation an empty argument list while preserving its exports.
+activate_environment() {
+    source ./init.sh
+}
+activate_environment
+unset -f activate_environment
 #source .venv/bin/activate
 
 echo ;
@@ -98,9 +121,10 @@ git rev-parse HEAD > "${RUNNING_DIR}/git-commit.txt"
 
 #python -u is for disabling buffering output messages, so that they are printed in real time
 srun \
+    "${SRUN_ARGS[@]}" \
     --ntasks 1 \
     --cpus-per-task "${SLURM_CPUS_PER_TASK:-8}" \
-    .venv/bin/python -u main.py train eval plot \
+    python -u main.py train eval plot \
         "${DEFAULT_ARGS[@]}" \
         --target-dir "$RUNNING_DIR" \
-        "$@"
+        "${PYTHON_ARGS[@]}"

@@ -28,8 +28,13 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(main.parse_args(['train']).n_checkpoints, 0)
         self.assertEqual(main.parse_args(['train', '--n-checkpoints', '4']).n_checkpoints, 4)
 
+    def test_tensorboard_flags(self):
+        self.assertFalse(main.parse_args(['train']).tensorboard)
+        self.assertTrue(main.parse_args(['train', '--tensorboard']).tensorboard)
+        self.assertFalse(main.parse_args(['train', '--no-tensorboard']).tensorboard)
+
     def test_invalid_commands_and_removed_flags(self):
-        for arguments in (['show'], ['--no-learn'], ['--no-render'], ['--wind', '--no-wind'],
+        for arguments in (['--tensorboard', '--no-tensorboard'], ['--tensorboard-log', 'logs'], ['show'], ['--no-learn'], ['--no-render'], ['--wind', '--no-wind'],
                           ['--no-stats-plot'], ['eval', '--eval-episodes', '0'],
                           ['train', '--wind-speed', '-1'], ['train', '--wind-speed', 'nan'],
                           ['train', '--wind-direction', 'inf'], ['train', '--turbulence-level', '8'],
@@ -174,13 +179,15 @@ class CheckpointTests(unittest.TestCase):
         cls.algorithm = PPO
         cls.monitor = Monitor
 
-    def train_run(self, directory, timesteps=20, checkpoints=4, n_envs=1, normalize=True):
+    def train_run(self, directory, timesteps=20, checkpoints=4, n_envs=1, normalize=True, tensorboard=None):
         arguments = ['train', '--target-dir', directory, '--total-timesteps', str(timesteps),
                      '--n-checkpoints', str(checkpoints), '--n-envs', str(n_envs),
                      '--vec-env', 'dummy', '--n-steps', '4', '--batch-size', '4',
                      '--net-arch', '8', '--n-epochs', '1', '--device', 'cpu', '--verbose', '0']
         if not normalize:
             arguments.append('--no-online-normalization')
+        if tensorboard is not None:
+            arguments.append('--tensorboard' if tensorboard else '--no-tensorboard')
         args = main.parse_args(arguments)
         history_lengths = []
         write_json = main.write_json
@@ -195,6 +202,22 @@ class CheckpointTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()):
             model = main.train(self.algorithm, args)
         return model, history_lengths
+
+    def test_tensorboard_logs_are_created_only_when_enabled(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as directory:
+                model, _ = self.train_run(directory, timesteps=4, checkpoints=0,
+                                          normalize=False, tensorboard=enabled)
+                log_dir = Path(directory) / 'tensorboard_log'
+                if enabled:
+                    self.assertEqual(model.tensorboard_log, str(log_dir))
+                    self.assertTrue(list(log_dir.rglob('events.out.tfevents.*')))
+                else:
+                    self.assertIsNone(model.tensorboard_log)
+                    self.assertFalse(log_dir.exists())
+                config = json.loads((Path(directory) / 'arguments.json').read_text())
+                self.assertEqual(config['tensorboard'], enabled)
+                self.assertNotIn('tensorboard_log', config)
 
     def test_checkpoints_preserve_matching_normalization_and_update_one_history(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -82,6 +82,58 @@ class GotoTests(unittest.TestCase):
         _, info = env.reset(seed=42)
         self.assertEqual(info['targets_reached'], 0)
 
+    def test_progress_uses_change_in_euclidean_distance_only(self):
+        env = self.env
+        env.reset(seed=42)
+        start = env.heli_dyn.state['xyz'].copy()
+        target = start + [100., 0., 0.]
+        env.set_target(dict(north_loc=target[0], east_loc=target[1], sea_alt=-target[2]))
+        for offset, expected in (([3., 0., 0.], .3),
+                                 ([100., 100., 0.], 0.),
+                                 ([-2., 0., 0.], -.2)):
+            with self.subTest(offset=offset):
+                env.heli_dyn.state['xyz'][:] = start + offset
+                reward, reached = env._calculate_reward()
+                self.assertAlmostEqual(reward, expected)
+                self.assertFalse(reached)
+        # No independent penalty on linear/angular velocities or attitude.
+        env.heli_dyn.state['xyz'][:] = start
+        env.heli_dyn.state['uvw'][:] = [20, 30, 40]
+        env.heli_dyn.state['pqr'][:] = [1, 2, 3]
+        env.heli_dyn.state['euler'][:] = [.2, -.3, .4]
+        self.assertEqual(env._calculate_reward(), (0., False))
+
+    def test_arrival_bonus_is_dominant_and_new_target_has_no_spurious_progress(self):
+        env = self.env
+        env.reset(seed=42)
+        start = env.heli_dyn.state['xyz'].copy()
+        target = start + [100., 0., 0.]
+        env.set_target(dict(north_loc=target[0], east_loc=target[1], sea_alt=-target[2]))
+        env.heli_dyn.state['xyz'][:] = target - [5., 0., 0.]
+        self.assertEqual(env._calculate_reward(), (109.5, True))
+        env._update_task()
+        self.assertEqual(env.targets_reached, 1)
+        self.assertEqual(env._calculate_reward(), (0., False))
+        env.heli_dyn.state['xyz'][0] += 1.
+        env._update_task()
+        self.assertEqual(env._calculate_reward(), (0., False))
+
+    def test_reward_weights_are_configurable_and_validated(self):
+        for weight in (-1., np.nan, np.inf):
+            with self.assertRaises(ValueError):
+                heligym.HeliGoto(progress_weight=weight)
+        for bonus in (0., -1., np.nan, np.inf):
+            with self.assertRaises(ValueError):
+                heligym.HeliGoto(arrival_reward=bonus)
+        env = self.env
+        env.reset(seed=42)
+        position = env.heli_dyn.state['xyz']
+        env.set_target(dict(north_loc=float(position[0]), east_loc=float(position[1]),
+                            sea_alt=float(-position[2])))
+        env.progress_weight = 0.
+        env.arrival_reward = 50.
+        self.assertEqual(env._calculate_reward(), (50., True))
+
     def test_cli_factory_and_gym_registration(self):
         self.assertEqual(main.parse_args(['train', '--task', 'goto']).task, 'goto')
         wrapped = main.make_env('goto', 'aw109', 1., no_wind=True)

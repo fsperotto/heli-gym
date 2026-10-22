@@ -45,6 +45,7 @@ class Heli(gym.Env, EzPickle):
 
     # Default maximum time for an episode
     default_max_time = 40.0
+    FAILURE_REWARD = -100.0
 
     # Default trim condition (steady-state / equilibrium), ground trim.
     default_trim_cond = {
@@ -343,20 +344,26 @@ class Heli(gym.Env, EzPickle):
                         and np.isfinite(self.heli_dyn.state.val).all()
                         and np.isfinite(self.heli_dyn.state_dots.val).all()):
                     raise FloatingPointError("Non-finite helicopter dynamics")
-                reward, successed_step = self._calculate_reward()
+                info = self._get_info()
+                if info['crash'] or info['flip']:
+                    reward, successed_step = self.FAILURE_REWARD, False
+                else:
+                    reward, successed_step = self._calculate_reward()
                 if not np.isfinite(reward):
                     raise FloatingPointError("Non-finite task reward")
-                self._update_task()
-                info = self._get_info()
+                if not info['failed']:
+                    self._update_task()
+                    info = self._get_info()
         except (FloatingPointError, OverflowError, ZeroDivisionError) as error:
             self.heli_dyn.state.val[:] = previous_state
             self.heli_dyn.state_dots.val[:] = previous_dots
             self.heli_dyn.observation = previous_obs.copy()
             info = {'failed': True, 'successed': False,
                     'time_up': self._is_time_up(), 'numerical_failure': True,
-                    'numerical_failure_reason': str(error)}
+                    'numerical_failure_reason': str(error),
+                    'crash': False, 'flip': False}
             self.previous_action = actions.copy()
-            self.current_reward = -100.0
+            self.current_reward = self.FAILURE_REWARD
             return self._agent_observation(previous_obs), self.current_reward, True, False, info
         done = info['failed'] or info['successed']
         truncated = info['time_up']
@@ -418,21 +425,31 @@ class Heli(gym.Env, EzPickle):
         return self._agent_observation(self.heli_dyn.observation), self._get_info()
 
     def _get_info(self):
+        failed = self._is_failed()
         return {
-            'failed': self._is_failed(), 
-            'successed': self._is_successed(), 
-            'time_up': self._is_time_up()
-            }
+            'failed': failed,
+            'crash': self._is_crashed(),
+            'flip': self._is_flipped(),
+            'successed': not failed and self._is_successed(),
+            'time_up': self._is_time_up(),
+        }
+
+    def _is_crashed(self):
+        touching_ground = self.heli_dyn._does_hit_ground(-self.heli_dyn.state['xyz'][2])
+        fast_descent = self.heli_dyn.state_dots['xyz'][2] > self.heli_dyn.MR['V_TIP'] * 0.05
+        excessive_tilt = np.any(np.abs(self.heli_dyn.state['euler'][:2]) > 60 * D2R)
+        return bool(touching_ground and (fast_descent or excessive_tilt))
+
+    def _is_flipped(self):
+        # Vertical projection of the body up axis on earth up. Using the
+        # projection handles equivalent Euler attitudes and ignores heading.
+        roll, pitch = self.heli_dyn.state['euler'][:2]
+        return bool(np.cos(float(roll)) * np.cos(float(pitch)) < -EPS)
 
     def _is_failed(self):
-        cond1 = self.heli_dyn._does_hit_ground(-self.heli_dyn.state['xyz'][2])
-        cond2 = self.heli_dyn.state_dots['xyz'][2] > self.heli_dyn.MR['V_TIP']*0.05
-        cond3 = self.heli_dyn.state['euler'][0] > 60*D2R
-        cond4 = self.heli_dyn.state['euler'][1] > 60*D2R
-        cond5 = np.abs(self.heli_dyn.state['xyz'][0]) > self.heli_dyn.north_south_extent / 2 or np.abs(self.heli_dyn.state['xyz'][1]) > self.heli_dyn.east_west_extent / 2 \
-             or -self.heli_dyn.state['xyz'][2] > self.heli_dyn.ground_touching_altitude() + 10000
-        cond = (cond1 and (cond2 or cond3 or cond4)) or cond5
-        return cond
+        outside_limits = np.abs(self.heli_dyn.state['xyz'][0]) > self.heli_dyn.north_south_extent / 2 or np.abs(self.heli_dyn.state['xyz'][1]) > self.heli_dyn.east_west_extent / 2 \
+            or -self.heli_dyn.state['xyz'][2] > self.heli_dyn.ground_touching_altitude() + 10000
+        return bool(self._is_crashed() or self._is_flipped() or outside_limits)
 
     def _is_successed(self):
         return self.successed_time >= self.success_duration  

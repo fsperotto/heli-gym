@@ -185,10 +185,12 @@ def parse_args(argv=None):
                         type=Path, 
                         default=Path(f'runs/local-{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}'),
                         help='run directory for models, settings and statistics; eval/plot/render read saved artifacts here (default: runs/local-<timestamp>)')
-    output.add_argument('--tensorboard-log', 
-                        type=str, 
-                        default=None,
-                        help='directory for training TensorBoard logs (default: disabled)')
+    tensorboard = output.add_mutually_exclusive_group()
+    tensorboard.add_argument('--tensorboard', dest='tensorboard', action='store_true',
+                             help='enable training TensorBoard logs in <target-dir>/tensorboard_log')
+    tensorboard.add_argument('--no-tensorboard', dest='tensorboard', action='store_false',
+                             help='disable TensorBoard logs (default)')
+    parser.set_defaults(tensorboard=False)
     output.add_argument('--pretrained-dir', 
                         type=Path, 
                         default=None,
@@ -590,7 +592,8 @@ def train(algorithm, args):
         env.seed(args.seed)
         with progress(f'Initializing {args.algorithm.upper()} policy (device: {args.device})', multiline=True):
             model = algorithm('MlpPolicy', env, seed=args.seed, device=args.device,
-                              verbose=args.verbose, tensorboard_log=args.tensorboard_log,
+                              verbose=args.verbose,
+                              tensorboard_log=str(args.target_dir / 'tensorboard_log') if args.tensorboard else None,
                               **settings)
         with progress(f'Training for {args.total_timesteps} transitions', multiline=True):
             model.learn(total_timesteps=args.total_timesteps, callback=training_callback)

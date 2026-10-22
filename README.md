@@ -46,9 +46,25 @@ and forward-flight tasks expose their respective configured targets.
 Previously trained 21-value policies and normalization files need retraining for
 this expanded observation space.
 
+Across all tasks, a crash or flip terminates the episode with a fixed **−100**
+reward, replacing that step's task reward. `info['crash']` and `info['flip']`
+identify these failures, and `info['failed']` is true. Failure takes precedence
+over success and goto arrival bonuses; no new waypoint is drawn on failure.
+A crash requires ground contact combined with excessive downward speed or an
+absolute roll/pitch angle above 60° (both signs are checked). A flip occurs even
+in the air when the helicopter's up axis points below the horizon, detected by
+`cos(roll) * cos(pitch) < 0` with a small numerical tolerance. Gentle upright
+ground contact alone is not a crash. Existing map/altitude limits and numerical
+failure handling remain active; the episode time limit remains a truncation.
+
 Use `--task goto` to pursue a continuing sequence of random position targets.
-It uses the hover reward against the currently active target, without a speed
-objective or smooth-action penalty. On arrival within a 10 ft 3D radius, the
+Its reward is `progress_weight * (previous_distance - current_distance)` plus
+`arrival_reward` when entering the target radius. Distances are straight-line 3D
+distances in feet to the same active target. Defaults are `progress_weight=0.1`
+and `arrival_reward=100`: closing 100 ft yields 10 progress points, while reaching
+the target yields 100 bonus points. Moving at constant distance yields zero
+progress reward; moving away yields a negative reward. There are no separate
+velocity, angular-motion, attitude, or action penalties. On arrival within a 10 ft 3D radius, the
 reward is calculated for the reached target, then a new target is returned in
 the observation. Arrival does not end the episode. Targets are sampled within
 ±100 ft north/east and ±50 ft altitude of the current position; altitude is raised
@@ -58,7 +74,8 @@ failure rules and episode time limit still apply. `info` includes `targets_reach
 and the active `target_position` (north, east, altitude).
 
 `HeliGoto` accepts `target_horizontal_range`, `target_altitude_range`,
-`target_radius`, and `target_ground_clearance` constructor settings in feet.
+`target_radius`, and `target_ground_clearance` constructor settings in feet,
+plus `progress_weight` (nonnegative) and `arrival_reward` (positive).
 Sampling uses the environment random generator, so `reset(seed=...)` reproduces
 its target sequence. Rendering shows task target values and a translucent cyan 3D marker with dark edges for
 explicit position targets, including hover and goto.
@@ -81,10 +98,10 @@ When constructing these environments directly, `smoothness_weight` sets lambda
 
 `stabilize` subtracts the mean square of the six normalized linear/angular
 velocities. It has no position, altitude, heading, roll/pitch, or ground-contact
-reward term: it rewards stopping wherever the helicopter is, allowing tilt to
+task reward term: it rewards stopping wherever the helicopter is, allowing tilt to
 compensate wind. Step success requires speed below 0.5 ft/s and angular speed
-below 0.01 rad/s, irrespective of attitude. Ground contact and other simulation
-failure conditions still terminate episodes according to the environment rules.
+below 0.01 rad/s, irrespective of attitude. Crash/flip failure rewards override this task reward as described above. Other
+simulation failure conditions still terminate episodes under the environment rules.
 `hover` retains its existing position and angular-rate objective. Its two reward
 components are averaged before subtracting the smoothness cost; those components
 are not bounded to magnitude 1. Smoothness costs impose no hard control-rate limit.
@@ -93,6 +110,18 @@ are not bounded to magnitude 1. Smoothness costs impose no hard control-rate lim
 python main.py train --task smooth-stabilize --target-dir runs/smooth-stabilize
 python main.py train --task smooth-hover --target-dir runs/smooth-hover
 ```
+
+Use `--tensorboard` to enable TensorBoard training logs under
+`<target-dir>/tensorboard_log`. No separate log directory argument is needed.
+`--no-tensorboard` disables logging, which is the default. For example:
+
+```bash
+python main.py train --task goto --target-dir runs/goto --tensorboard
+tensorboard --logdir runs/goto/tensorboard_log
+```
+
+These switches also pass through the Bash launchers. They replace the previous
+`--tensorboard-log PATH` option. Disabling logging leaves existing log files intact.
 
 Use `--n-checkpoints N` to save up to N intermediate checkpoints during training
 (default: 0, disabled). The count excludes the final model. For example,

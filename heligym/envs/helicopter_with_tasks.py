@@ -59,13 +59,20 @@ class HeliGoto(HeliHover):
 
     def __init__(self, *args, target_horizontal_range=100.0,
                  target_altitude_range=50.0, target_radius=10.0,
-                 target_ground_clearance=50.0, **kwargs):
+                 target_ground_clearance=50.0, progress_weight=0.1,
+                 arrival_reward=100.0, **kwargs):
         values = (target_horizontal_range, target_altitude_range,
                   target_radius, target_ground_clearance)
         if not all(np.isfinite(value) and value > 0 for value in values):
             raise ValueError('Goto target ranges, radius, and clearance must be positive and finite')
         if target_horizontal_range <= target_radius:
             raise ValueError('Goto horizontal range must exceed target radius')
+        if not np.isfinite(progress_weight) or progress_weight < 0:
+            raise ValueError('Goto progress weight must be finite and nonnegative')
+        if not np.isfinite(arrival_reward) or arrival_reward <= 0:
+            raise ValueError('Goto arrival reward must be positive and finite')
+        self.progress_weight = float(progress_weight)
+        self.arrival_reward = float(arrival_reward)
         self.target_horizontal_range = float(target_horizontal_range)
         self.target_altitude_range = float(target_altitude_range)
         self.target_radius = float(target_radius)
@@ -96,15 +103,27 @@ class HeliGoto(HeliHover):
     def _reset_task(self):
         self.targets_reached = 0
         self._draw_target()
+        self._previous_position = self.heli_dyn.state['xyz'].copy()
+
+    def _distance_to_target(self, position):
+        target = np.array([self.task_target['north_loc'], self.task_target['east_loc'],
+                           -self.task_target['sea_alt']], dtype=np.float64)
+        return float(np.linalg.norm(np.asarray(position, dtype=np.float64) - target))
+
+    def _calculate_reward(self):
+        # Both distances use the same active target. Target switching happens
+        # only after this reward has been calculated.
+        distance = self._distance_to_target(self.heli_dyn.state['xyz'])
+        progress = self._distance_to_target(self._previous_position) - distance
+        reached = distance <= self.target_radius
+        reward = self.progress_weight * progress + self.arrival_reward * reached
+        return float(reward), bool(reached)
 
     def _update_task(self):
-        position = self.heli_dyn.state['xyz']
-        current = np.array([position[0], position[1], -position[2]])
-        target = np.array([self.task_target[key]
-                           for key in ('north_loc', 'east_loc', 'sea_alt')])
-        if np.linalg.norm(current - target) <= self.target_radius:
+        if self._distance_to_target(self.heli_dyn.state['xyz']) <= self.target_radius:
             self.targets_reached += 1
             self._draw_target()
+        self._previous_position = self.heli_dyn.state['xyz'].copy()
 
     def _is_successed(self):
         # Reaching a waypoint starts the next leg instead of ending the episode.
