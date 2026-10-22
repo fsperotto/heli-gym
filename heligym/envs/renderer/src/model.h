@@ -22,7 +22,8 @@ public:
     glm::mat4 base_model = glm::mat4(1.0f);
     glm::vec3 mainrotor = glm::vec3(0.0f);
     glm::vec3 tailrotor = glm::vec3(0.0f);
-    Shader* shader;
+    Shader* shader = nullptr;
+    ~Model();
 
     // To have different shader for different objecs, shader should be created 
     // for each model. To handle it, shader should be created.

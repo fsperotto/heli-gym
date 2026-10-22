@@ -68,6 +68,48 @@ int main()
     window.set_guiText_row_count(section, -1);
     assert(window.v_guiTextSection[section]->visible_rows == -1);
 
+    // GUI snapshots must outlive temporary ctypes-style input buffers.
+    int target_section = window.create_guiText("Target", ImVec2(), ImVec2());
+    {
+        char label[] = "SPEED : %.2f ft/s";
+        float speed = 0.0f;
+        window.add_item_to_guiText(target_section, label, &speed);
+        label[0] = 'X';
+        speed = 0.31f;
+        const guiText& row = window.v_guiTextSection[target_section]->textVector->at(0);
+        assert(row.str == "SPEED : %.2f ft/s");
+        assert(row.val == 0.0f);
+    }
+    {
+        float values[] = {0.0f};
+        window.set_guiText(target_section, values);
+        values[0] = 123.0f;
+    }
+    assert(window.v_guiTextSection[target_section]->textVector->at(0).val == 0.0f);
+
+    float short_values[] = {7.0f};
+    assert(!set_guiText_checked(&window, target_section, 0, short_values));
+    assert(!set_guiText_checked(&window, target_section, 2, short_values));
+    assert(!set_guiText_checked(&window, -1, 1, short_values));
+    assert(!set_guiText_checked(nullptr, target_section, 1, short_values));
+    assert(window.v_guiTextSection[target_section]->textVector->at(0).val == 0.0f);
+    assert(set_guiText_checked(&window, target_section, 1, short_values));
+    short_values[0] = 999.0f;
+    assert(window.v_guiTextSection[target_section]->textVector->at(0).val == 7.0f);
+    assert(!add_guiText_checked(&window, -1, 0, nullptr, nullptr));
+    assert(!add_guiText_checked(&window, target_section, 1, nullptr, short_values));
+
+    assert(!set_guiText_row_count(&window, -1, 1));
+    assert(!set_guiText_row_count(nullptr, target_section, 1));
+    assert(set_guiText_row_count(&window, target_section, 1));
+    set_fps(&window, 50.0f);
+    set_fps(&window, 0.0f);
+    set_fps(&window, -1.0f);
+    set_fps(&window, std::nanf(""));
+    assert(window.FPS_limit == 50.0f);
+    set_fps(&window, 0.1f);
+    assert(window.dt.count() > 9000000000LL);
+
     window.camera = new Camera(glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     window.update_helicopter_camera(0.0f, 0.0f, 0.0f, 0.0f);
     assert(std::abs(window.camera->Position.z - 30.0f) < 1e-5f);
@@ -77,7 +119,6 @@ int main()
     assert(std::abs(window.camera->Position.y - 8.0f) < 1e-5f);
     window.update_helicopter_camera(0.0f, 0.0f, 0.0f, 1.57079632679f);
     assert(std::abs(window.camera->Position.z + 30.0f) < 1e-4f);
-    delete window.camera;
     Window::static_key_callback(nullptr, GLFW_KEY_ESCAPE, 0, GLFW_PRESS, 0);
     assert(close_requested);
     assert(pop_key_press(&window) == -1);

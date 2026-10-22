@@ -1,11 +1,12 @@
 #include "gWindow.h"
+#include <stdexcept>
 
 Window::Window(const unsigned int SCR_WIDTH,
                         const unsigned int SCR_HEIGHT,
                         const char* title)
 {
     // Initialize GLFW.
-    glfwInit();
+    if (!glfwInit()) throw std::runtime_error("GLFW initialization failed");
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -25,6 +26,7 @@ Window::Window(const unsigned int SCR_WIDTH,
     {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
+        throw std::runtime_error("GLFW window creation failed");
     }
 
     // Set the context.
@@ -36,7 +38,9 @@ Window::Window(const unsigned int SCR_WIDTH,
     // Initialize GLAD.
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
-        std::cout << "Failed to initialize GLAD" << std::endl;
+        glfwDestroyWindow(this->window);
+        glfwTerminate();
+        throw std::runtime_error("GLAD initialization failed");
     }
 
     // Enable Global OpenGL properties.
@@ -71,6 +75,7 @@ Window::Window(const unsigned int SCR_WIDTH,
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     ImGui_ImplGlfw_InitForOpenGL(this->window, true);
     ImGui_ImplOpenGL3_Init("#version 150");
+    this->gui_initialized = true;
 
     // Create Uniform Buffer Object to reduce need memory in GPU
 
@@ -206,9 +211,7 @@ void Window::render()
     else
     {
         // If window should close. Close the Dear ImGui.
-        ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
+        this->shutdown_gui();
     }
 }
 
@@ -265,7 +268,7 @@ void Window::renderGUI()
              (this->v_guiTextSection[s]->visible_rows < 0 ||
               i < this->v_guiTextSection[s]->visible_rows); i++)
         {
-            ImGui::Text(v_guiText[i].str, *v_guiText[i].val);
+            ImGui::Text(v_guiText[i].str.c_str(), v_guiText[i].val);
         }
         
         ImGui::End();
@@ -499,9 +502,7 @@ int Window::create_guiText(const char* title, ImVec2 position, ImVec2 size)
 
 void Window::add_item_to_guiText(int v_guiText_ind, const char* str, float* val)
 {
-    guiText* temp = new guiText((char*) str, val);
-    this->v_guiTextSection[v_guiText_ind]->textVector->push_back(*temp);
-    delete temp;
+    this->v_guiTextSection[v_guiText_ind]->textVector->emplace_back(str, val);
 }
 
 
@@ -511,7 +512,7 @@ void Window::set_guiText(int v_guiText_ind, float* val)
     for (int i = 0; i < temp->size(); i++)
     {
         guiText* tgT = &temp->at(i);
-        tgT->val = &val[i];
+        tgT->val = val[i];
     }
 }
 
@@ -519,4 +520,24 @@ void Window::set_guiText(int v_guiText_ind, float* val)
 void Window::set_guiText_row_count(int section, int count)
 {
     this->v_guiTextSection.at(section)->visible_rows = count;
+}
+
+void Window::shutdown_gui()
+{
+    if (!this->gui_initialized) return;
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    this->gui_initialized = false;
+}
+
+Window::~Window()
+{
+    // OpenGL resources belong to the GLFW context; terminate releases it.
+    // These allocations are ordinary C++ memory and need explicit ownership.
+    delete this->camera;
+    for (guiTextSection* section : this->v_guiTextSection) {
+        delete section->textVector;
+        delete section;
+    }
 }

@@ -42,8 +42,10 @@ class CrashFlipTests(unittest.TestCase):
 
     def test_flip_depends_on_physical_attitude_not_heading_or_euler_sign(self):
         for roll, pitch, expected in ((0, 0, False), (89, 0, False), (0, -89, False),
-                                      (100, 0, True), (-100, 0, True),
-                                      (0, 100, True), (0, -100, True),
+                                      (100, 0, False), (-100, 0, False),
+                                      (130, 0, True), (-130, 0, True),
+                                      (0, 100, False), (0, -100, False),
+                                      (0, 130, True), (0, -130, True),
                                       (180, 0, True), (-180, 0, True),
                                       (180, 180, False)):
             for yaw in (0, 120):
@@ -51,6 +53,27 @@ class CrashFlipTests(unittest.TestCase):
                     self.env.heli_dyn.state['euler'][:] = np.deg2rad([roll, pitch, yaw])
                     self.assertEqual(self.env._is_flipped(), expected)
                     self.assertEqual(self.env._is_failed(), expected)
+
+    def test_default_flip_threshold_is_thirty_degrees_below_horizon(self):
+        self.assertEqual(self.env.flip_angle, -30.)
+        for axis in (0, 1):
+            for angle, expected in ((119.9, False), (120.1, True),
+                                    (-119.9, False), (-120.1, True)):
+                self.env.heli_dyn.state['euler'][:] = 0
+                self.env.heli_dyn.state['euler'][axis] = np.deg2rad(angle)
+                self.assertEqual(self.env._is_flipped(), expected)
+
+    def test_custom_threshold_and_validation(self):
+        env = heligym.Heli(render_mode=None, wind_enabled=False, flip_angle=0.)
+        try:
+            env.reset(seed=42)
+            env.heli_dyn.state['euler'][0] = np.deg2rad(100.)
+            self.assertTrue(env._is_flipped())
+        finally:
+            env.close()
+        for angle in (-91., 91., np.nan, np.inf):
+            with self.assertRaises(ValueError):
+                heligym.Heli(render_mode=None, flip_angle=angle)
 
     def test_crash_or_flip_overrides_task_reward_and_does_not_advance_target(self):
         for crash in (False, True):

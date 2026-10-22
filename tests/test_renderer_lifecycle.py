@@ -79,6 +79,23 @@ class RendererLifecycleTests(unittest.TestCase):
         self.renderer.wait_events()
         self.assertEqual(self.native.mock_calls, [])
 
+    def test_camera_coordinates_roundtrip_and_scale_does_not_reflect(self):
+        self.native.get_camera_pos.return_value = numpy.array([1., 3., 2.])
+        numpy.testing.assert_array_equal(self.renderer.get_camera_pos(), [1., 2., -3.])
+        self.renderer.set_camera_pos(1., 2., -3.)
+        self.native.set_camera_pos.assert_called_once_with(self.renderer.camera, 1., 3., 2.)
+        self.renderer.scale_model('model', 1., 2., 3.)
+        self.native.scale_model.assert_called_once_with('model', 1., 3., 2.)
+
+    def test_native_access_after_close_is_rejected(self):
+        self.renderer.close()
+        for call in (lambda: self.renderer.get_camera_pos(),
+                     lambda: self.renderer.set_camera_pos(0, 0, 0),
+                     lambda: self.renderer.translate_model('model', 0, 0, 0),
+                     lambda: self.renderer.set_guiText(0, ['a'], [0])):
+            with self.assertRaises(RuntimeError):
+                call()
+
     def test_control_bars_preserve_signed_values_and_clamp_actions(self):
         for actions, expected in [([-1.0, 0.0, 1.0, 2.0], [-1.0, 0.0, 1.0, 1.0]),
                                   ([-2.0, -0.5, 0.25, 0.5], [-1.0, -0.5, 0.25, 0.5])]:

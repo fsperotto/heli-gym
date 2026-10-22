@@ -76,7 +76,12 @@ class Heli(gym.Env, EzPickle):
                  temperature_lapse_rate=DEFAULT_WEATHER["temperature_lapse_rate"],
                  troposphere_height=DEFAULT_WEATHER["troposphere_height"],
                  sea_level_air_density=DEFAULT_WEATHER["sea_level_air_density"],
-                 gravity=DEFAULT_WEATHER["gravity"]):
+                 gravity=DEFAULT_WEATHER["gravity"],
+                 flip_angle=-30.0):
+
+        if not np.isfinite(flip_angle) or not -90.0 <= flip_angle <= 90.0:
+            raise ValueError('flip_angle must be finite and between -90 and 90 degrees')
+        self.flip_angle = float(flip_angle)
 
         EzPickle.__init__(self,
                           heli_name=heli_name,
@@ -91,7 +96,8 @@ class Heli(gym.Env, EzPickle):
                           temperature_lapse_rate=temperature_lapse_rate,
                           troposphere_height=troposphere_height,
                           sea_level_air_density=sea_level_air_density,
-                          gravity=gravity)
+                          gravity=gravity,
+                          flip_angle=flip_angle)
 
         self.wind_enabled = wind_enabled
         self._configured_wind_speed = wind_speed
@@ -430,6 +436,7 @@ class Heli(gym.Env, EzPickle):
             'failed': failed,
             'crash': self._is_crashed(),
             'flip': self._is_flipped(),
+            'outside_limits': self._is_outside_limits(),
             'successed': not failed and self._is_successed(),
             'time_up': self._is_time_up(),
         }
@@ -444,12 +451,17 @@ class Heli(gym.Env, EzPickle):
         # Vertical projection of the body up axis on earth up. Using the
         # projection handles equivalent Euler attitudes and ignores heading.
         roll, pitch = self.heli_dyn.state['euler'][:2]
-        return bool(np.cos(float(roll)) * np.cos(float(pitch)) < -EPS)
+        up_vertical = np.cos(float(roll)) * np.cos(float(pitch))
+        # sin(elevation above the horizon) is the up vector's vertical component.
+        return bool(up_vertical < np.sin(self.flip_angle * D2R) - EPS)
 
-    def _is_failed(self):
+    def _is_outside_limits(self):
         outside_limits = np.abs(self.heli_dyn.state['xyz'][0]) > self.heli_dyn.north_south_extent / 2 or np.abs(self.heli_dyn.state['xyz'][1]) > self.heli_dyn.east_west_extent / 2 \
             or -self.heli_dyn.state['xyz'][2] > self.heli_dyn.ground_touching_altitude() + 10000
-        return bool(self._is_crashed() or self._is_flipped() or outside_limits)
+        return bool(outside_limits)
+
+    def _is_failed(self):
+        return self._is_crashed() or self._is_flipped() or self._is_outside_limits()
 
     def _is_successed(self):
         return self.successed_time >= self.success_duration  

@@ -20,10 +20,11 @@
 // text gui has only one values for a text. 
 struct guiText
 {
-    char* str;
-    float* val;
-    guiText() { str = 0; val = 0; }
-    guiText(char* _str, float* _val) { str = _str; val = _val; }
+    // Own snapshots: ctypes callers may pass temporary strings and arrays.
+    std::string str;
+    float val = 0.0f;
+    guiText() = default;
+    guiText(const char* text, const float* value) : str(text), val(*value) {}
 };
 
 struct guiTextSection
@@ -78,10 +79,12 @@ public:
     static void static_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 
     // Base window if GLFW.
-    GLFWwindow* window;
+    GLFWwindow* window = nullptr;
 
     // Camera class.
-    Camera* camera;
+    Camera* camera = nullptr;
+    bool gui_initialized = false;
+    void shutdown_gui();
     bool show_info = true;
     bool follow_helicopter_bearing = false;
     void update_helicopter_camera(float north, float east, float down, float bearing);
@@ -97,6 +100,7 @@ public:
 
     // Basic Window constructor.
     Window() {};
+    ~Window();
 
     // Window constructor with Width, Height and Title parameters.
     Window(const unsigned int SCR_WIDTH,

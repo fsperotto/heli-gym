@@ -79,8 +79,13 @@ class HeliGoto(HeliHover):
         self.target_ground_clearance = float(target_ground_clearance)
         self.targets_reached = 0
         super().__init__(*args, **kwargs)
-        # No speed objective; the target speed observation mirrors current speed.
-        self.set_target()
+        # No speed objective; expose a fixed zero target speed.
+        self.set_target(dict(vel=0.0))
+
+    def _task_observation(self, dynamics_observation):
+        observation = super()._task_observation(dynamics_observation)
+        observation[3] = 0.0  # Speed is not an objective for this task.
+        return observation
 
     def _draw_target(self):
         position = self.heli_dyn.state['xyz']
@@ -96,7 +101,7 @@ class HeliGoto(HeliHover):
                 -self.target_altitude_range, self.target_altitude_range),
                 ground + self.target_ground_clearance)
             if np.linalg.norm(np.array([north, east, altitude]) - current) > self.target_radius:
-                self.set_target(dict(north_loc=north, east_loc=east, sea_alt=altitude))
+                self.set_target(dict(north_loc=north, east_loc=east, sea_alt=altitude, vel=0.0))
                 return
         raise RuntimeError('Could not sample a goto target outside the arrival radius')
 

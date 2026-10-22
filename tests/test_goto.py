@@ -1,6 +1,6 @@
 """Task observations and seeded, continuing waypoint navigation."""
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import gymnasium as gym
 import numpy as np
@@ -54,8 +54,8 @@ class GotoTests(unittest.TestCase):
         self.assertTrue(np.all(np.abs(target[:2] - initial[:2]) <= 100.))
         self.assertGreaterEqual(target[2] + 1e-3,
                                 env.heli_dyn.ground_height_at(*target[:2]) + 50.)
-        self.assertNotIn('vel', env.get_target())
-        self.assertAlmostEqual(first[20], np.linalg.norm(first[4:7]))
+        self.assertEqual(env.get_target()['vel'], 0.)
+        self.assertEqual(first[20], 0.)
         other, _ = env.reset(seed=43)
         self.assertFalse(np.array_equal(other[17:20], target))
 
@@ -81,6 +81,23 @@ class GotoTests(unittest.TestCase):
         self.assertFalse(env._is_successed())
         _, info = env.reset(seed=42)
         self.assertEqual(info['targets_reached'], 0)
+
+    def test_target_speed_stays_zero_while_moving_and_after_target_changes(self):
+        env = self.env
+        env.reset(seed=42)
+        raw = env.heli_dyn.observation.copy()
+        raw[4:7] = [3., 4., 0.]
+        self.assertEqual(env._agent_observation(raw)[20], 0.)
+        env._draw_target()
+        self.assertEqual(env.get_target()['vel'], 0.)
+        self.assertEqual(env._agent_observation(raw)[20], 0.)
+        # Even a position-only target keeps goto's unused speed field zero.
+        env.set_target(dict(north_loc=0., east_loc=0., sea_alt=2000.))
+        self.assertEqual(env._agent_observation(raw)[20], 0.)
+        env.heli_dyn.observation = raw
+        env.renderer = Mock()
+        env.render()
+        self.assertEqual(env.renderer.render.call_args.kwargs['target'][3], 0.)
 
     def test_progress_uses_change_in_euclidean_distance_only(self):
         env = self.env

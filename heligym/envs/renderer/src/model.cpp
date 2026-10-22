@@ -1,5 +1,6 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "model.h"
+#include <stdexcept>
 
 Model::Model(std::string const &path, 
             std::string vertex_shader_file_path,
@@ -86,7 +87,7 @@ void Model::loadModel(std::string const &path)
     if(!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) // if is Not Zero
     {
         std::cout << "ERROR::ASSIMP:: " << importer.GetErrorString() << std::endl;
-        return;
+        throw std::runtime_error(importer.GetErrorString());
     }
 
     // Retrieve the directory path of the filepath
@@ -293,4 +294,9 @@ unsigned int TextureFromFile(const char *path, const std::string &directory)
     }
 
     return textureID;
+}
+Model::~Model()
+{
+    // The GLFW context releases GPU resources; free the shader wrapper too.
+    delete this->shader;
 }

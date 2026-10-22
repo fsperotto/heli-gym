@@ -11,6 +11,10 @@ class Renderer(object):
         
         self.camera = self.get_camera()
 
+    def _ensure_open(self):
+        if self._closed or self._terminated:
+            raise RuntimeError('Renderer is closed')
+
     def render(self):
         """
             Render the `Renderer's` window.
@@ -62,6 +66,7 @@ class Renderer(object):
 
     def update_helicopter_camera(self, north, east, down, bearing):
         """Track a NED helicopter pose in the currently selected camera mode."""
+        self._ensure_open()
         pyapi.update_helicopter_camera(self.window, north, east, down, bearing)
 
     def is_close(self):
@@ -89,6 +94,7 @@ class Renderer(object):
 
             Note : If `abs_path` is used, shaders' path should be also absolute path.
         """
+        self._ensure_open()
     
         if rel_path:
             return pyapi.create_model(os.path.dirname(os.path.realpath(__file__)) + rel_path, 
@@ -103,12 +109,14 @@ class Renderer(object):
         """
             Add model to `Renderer's` window as permanent drawable objects.
         """
+        self._ensure_open()
         pyapi.add_permanent_to_window(self.window, model)
 
     def add_instantanous_object_to_window(self, model):
         """
             Add model to `Renderer's` window as instantaneous drawable objects.
         """
+        self._ensure_open()
         pyapi.add_instantaneous_to_window(self.window, model)
 
     def translate_model(self, model, x, y, z):
@@ -116,6 +124,7 @@ class Renderer(object):
             Translate model to x, y and z locations. Locations are in NED (North-East-Down)
             frame. 
         """
+        self._ensure_open()
         # Because of the vector direction notation difference 
         # we set proper location to proper axis.
         # In Body-frame Y-axis is perpendicular to X-axis and Z-axis is cross
@@ -127,6 +136,7 @@ class Renderer(object):
         """
             Rotate model w.r.t Euler angles. 
         """
+        self._ensure_open()
         # In Body-frame Y-axis is perpendicular to X-axis and Z-axis is cross
         # product of the axes. On the other hand, in OpenGL (or Computer Graphics)
         # Z-axis is Y-axis is altered. 
@@ -139,17 +149,19 @@ class Renderer(object):
             Scale model to x, y and z axes. Axes are in NED (North-East-Down)
             frame. 
         """
+        self._ensure_open()
         # Because of the vector direction notation difference 
         # we set proper angle to proper axis.
         # In Body-frame Y-axis is perpendicular to X-axis and Z-axis is cross
         # product of the axes. On the other hand, in OpenGL (or Computer Graphics)
         # Z-axis is Y-axis is altered. 
-        pyapi.scale_model(model, x, -z, y)
+        pyapi.scale_model(model, x, z, y)
 
     def rotate_MR(self, model, phi, theta, psi):
         """
             Rotate Main Rotor of Model with its Euler Angle.
         """
+        self._ensure_open()
         # In Body-frame Y-axis is perpendicular to X-axis and Z-axis is cross
         # product of the axes. On the other hand, in OpenGL (or Computer Graphics)
         # Z-axis is Y-axis is altered. 
@@ -159,6 +171,7 @@ class Renderer(object):
         """
             Rotate Tail Rotor of Model with its Euler Angle.
         """
+        self._ensure_open()
         # In Body-frame Y-axis is perpendicular to X-axis and Z-axis is cross
         # product of the axes. On the other hand, in OpenGL (or Computer Graphics)
         # Z-axis is Y-axis is altered. 
@@ -169,24 +182,28 @@ class Renderer(object):
             Get FPS of `Renderer's` window.
             Return will be float.
         """
+        self._ensure_open()
         return pyapi.get_fps(self.window)
 
     def set_fps(self, fps):
         """
             Set FPS of `Renderer's` window.
         """
+        self._ensure_open()
         pyapi.set_fps(self.window, fps)
 
     def get_camera(self):
         """
             Get Camera of `Renderer's` window.
         """
+        self._ensure_open()
         return pyapi.get_camera(self.window)
 
     def set_camera_pos(self, x, y, z):
         """
             Set Camera position of `Renderer's` window.
         """
+        self._ensure_open()
         # Because of the vector direction notation difference 
         # we set proper angle to proper axis.
         # In Body-frame Y-axis is perpendicular to X-axis and Z-axis is cross
@@ -199,7 +216,9 @@ class Renderer(object):
             Get Camera position of `Renderer's` window.
             Return will be float array.
         """
-        return pyapi.get_camera_pos(self.camera)
+        self._ensure_open()
+        position = pyapi.get_camera_pos(self.camera)
+        return np.asarray(self.coord_from_graphics_to_ned(*position), dtype=np.float32)
 
     def coord_from_graphics_to_ned(self, x, y, z):
         """
@@ -213,18 +232,21 @@ class Renderer(object):
             Check whether `Renderer's` window is visible or not. 
             Return will be boolean.
         """
+        self._ensure_open()
         return pyapi.is_visible(self.window)
 
     def hide_window(self):
         """
             Hide `Renderer's` window.
         """
+        self._ensure_open()
         pyapi.hide_window(self.window)
 
     def show_window(self):
         """
             Show `Renderer's` window.
         """
+        self._ensure_open()
         pyapi.show_window(self.window)
 
     def create_guiText(self, title, pos_x, pos_y, size_x, size_y):
@@ -251,6 +273,7 @@ class Renderer(object):
             >>> size_y   : Size of guiText in y.
             >>> type     : float
         """
+        self._ensure_open()
         guiText = pyapi.create_guiText(self.window, title, (pos_x, pos_y), (size_x, size_y))
         return guiText
 
@@ -273,6 +296,7 @@ class Renderer(object):
 
             str and val are should be list.
         """
+        self._ensure_open()
         pyapi.add_guiText(self.window, guiText, str, val)
 
     def set_guiText(self, guiText, str, val):
@@ -280,10 +304,12 @@ class Renderer(object):
             Set guiText.
             str and val are should be list.
         """
+        self._ensure_open()
         pyapi.set_guiText(self.window, guiText, str, val)
 
     
 
     def set_guiText_row_count(self, section, count):
         """Use a negative count to show every row."""
+        self._ensure_open()
         pyapi.set_guiText_row_count(self.window, section, count)

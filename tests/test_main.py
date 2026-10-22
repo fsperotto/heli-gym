@@ -33,8 +33,36 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(main.parse_args(['train', '--tensorboard']).tensorboard)
         self.assertFalse(main.parse_args(['train', '--no-tensorboard']).tensorboard)
 
+    def test_episode_end_reasons(self):
+        cases = [({'failed': True, 'flip': True}, True, False, ['flip']),
+                 ({'failed': True, 'crash': True, 'flip': True}, True, False, ['crash', 'flip']),
+                 ({'time_up': True}, False, True, ['max time (truncated)']),
+                 ({'successed': True}, True, False, ['success']),
+                 ({'failed': True, 'outside_limits': True}, True, False, ['outside simulation limits']),
+                 ({'failed': True, 'numerical_failure': True,
+                   'numerical_failure_reason': 'overflow'}, True, False,
+                  ['error (numerical failure): overflow']),
+                 ({}, False, False, ['window closed'])]
+        for info, terminated, truncated, expected in cases:
+            with self.subTest(info=info):
+                self.assertEqual(main.episode_end_reasons(info, terminated, truncated, render=True), expected)
+
+    def test_flip_angle_cli_and_factory(self):
+        self.assertEqual(main.parse_args(['train']).flip_angle, -30.)
+        self.assertEqual(main.parse_args(['render', '--flip-angle', '-10']).flip_angle, -10.)
+        with tempfile.TemporaryDirectory() as directory:
+            main.write_json(Path(directory) / 'arguments.json', {'flip_angle': -15.})
+            self.assertEqual(main.parse_args(['render', '--target-dir', directory]).flip_angle, -15.)
+            self.assertEqual(main.parse_args(['render', '--target-dir', directory,
+                                             '--flip-angle', '0']).flip_angle, 0.)
+        env = main.make_env('heli', 'aw109', 1., no_wind=True, monitor=False, flip_angle=-20.)
+        try:
+            self.assertEqual(env.flip_angle, -20.)
+        finally:
+            env.close()
+
     def test_invalid_commands_and_removed_flags(self):
-        for arguments in (['--tensorboard', '--no-tensorboard'], ['--tensorboard-log', 'logs'], ['show'], ['--no-learn'], ['--no-render'], ['--wind', '--no-wind'],
+        for arguments in (['--flip-angle', '-91'], ['--flip-angle', 'nan'], ['--tensorboard', '--no-tensorboard'], ['--tensorboard-log', 'logs'], ['show'], ['--no-learn'], ['--no-render'], ['--wind', '--no-wind'],
                           ['--no-stats-plot'], ['eval', '--eval-episodes', '0'],
                           ['train', '--wind-speed', '-1'], ['train', '--wind-speed', 'nan'],
                           ['train', '--wind-direction', 'inf'], ['train', '--turbulence-level', '8'],
@@ -325,7 +353,7 @@ class EpisodeTests(unittest.TestCase):
                     patch.object(main.time, 'sleep') as sleep:
                 result = main.run_episode(model, args, path, seed=123)
             self.assertEqual(result, dict(seed=123, steps=2, reward=10.0,
-                                          terminated=False, truncated=True))
+                                          terminated=False, truncated=True, termination_reasons=['truncated']))
             np.testing.assert_allclose(model.predict.call_args_list[0].args[0], expected)
             for call in model.predict.call_args_list:
                 self.assertTrue(call.kwargs['deterministic'])
@@ -351,6 +379,23 @@ class EpisodeTests(unittest.TestCase):
             self.assertEqual(statistics['mean_steps'], 3)
             self.assertEqual([call.args[3] for call in run.call_args_list],
                              [args.seed + args.n_envs, args.seed + args.n_envs + 1])
+
+    def test_render_retains_terminal_info_in_summary(self):
+        args = main.parse_args(['render', '--no-online-normalization'])
+        env = EpisodeEnv()
+        env.renderer = Mock()
+        env.renderer.is_close.return_value = False
+        env.renderer.get_key_presses.return_value = []
+        env.render = Mock()
+        env.step = Mock(return_value=(np.array([3], dtype=np.float32), -100., True, False,
+                                     {'failed': True, 'flip': True}))
+        model = Mock()
+        model.predict.return_value = (np.zeros((1, 1), dtype=np.float32), None)
+        with patch.object(main, 'make_env', return_value=env):
+            result = main.run_episode(model, args, None, seed=123, render=True)
+        self.assertEqual(result['termination_reasons'], ['flip'])
+        self.assertEqual(result['reward'], -100.)
+        self.assertTrue(result['terminated'])
 
     def test_render_displays_frames_and_paces_the_episode(self):
         with tempfile.TemporaryDirectory() as directory:

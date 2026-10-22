@@ -52,12 +52,20 @@ identify these failures, and `info['failed']` is true. Failure takes precedence
 over success and goto arrival bonuses; no new waypoint is drawn on failure.
 A crash requires ground contact combined with excessive downward speed or an
 absolute roll/pitch angle above 60° (both signs are checked). A flip occurs even
-in the air when the helicopter's up axis points below the horizon, detected by
-`cos(roll) * cos(pitch) < 0` with a small numerical tolerance. Gentle upright
+in the air when the elevation of the helicopter's up vector above the horizon
+falls below `flip_angle` (default **−30°**). Detection compares
+`cos(roll) * cos(pitch)` against `sin(flip_angle)` with a small numerical tolerance.
+For pure roll or pitch, the default corresponds to tilting more than 120° away
+from upright. Use `--flip-angle -30` in the CLI, or `flip_angle=-30.0` when
+constructing an environment; valid values are −90° to +90°. Setting it to 0
+restores the previous horizon-crossing threshold. Saved runs retain this setting
+for evaluation/rendering, unless explicitly overridden. Gentle upright
 ground contact alone is not a crash. Existing map/altitude limits and numerical
 failure handling remain active; the episode time limit remains a truncation.
 
 Use `--task goto` to pursue a continuing sequence of random position targets.
+Its target-speed observation is fixed at zero, including while moving and after
+waypoint changes; speed is not included in its reward.
 Its reward is `progress_weight * (previous_distance - current_distance)` plus
 `arrival_reward` when entering the target radius. Distances are straight-line 3D
 distances in feet to the same active target. Defaults are `progress_weight=0.1`
@@ -184,6 +192,13 @@ both pilot modes and while paused.
 **H** hides/shows all info panels and control bars (shown initially). Both toggles
 also work while paused. The left column stacks Observations, Wind, then Task target.
 Agent mode hides manual flight/reset instructions while retaining shared controls.
+The rendered episode summary includes termination reasons, for example:
+`Rendered episode: steps=659, return=-105.178, termination=flip`.
+It reports crash, flip, success, max time (truncated), simulation limits,
+numerical errors with details, or a user-closed window. Simultaneous conditions
+are listed together. Evaluation episode JSON records also include
+`termination_reasons`.
+
 The GUI’s **Simulation** panel shows FPS, the current episode step, and the latest
 unnormalized step reward. Step and reward reset to zero at the start of each episode.
 The **Wind** panel shows whether wind is enabled, mean speed and direction,

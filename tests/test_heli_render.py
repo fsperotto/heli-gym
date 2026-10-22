@@ -55,7 +55,7 @@ class HeliRenderTests(unittest.TestCase):
         self.assertFalse(any('FPS' in label for label in self.renderer.info_text))
         self.native.set_guiText.assert_any_call(
             self.renderer.simulation_id, self.renderer.simulation_text, simulation_values)
-        # The C++ GUI retains this buffer, so updates must preserve its address.
+        # Reuse the Python-side snapshot buffer across updates.
         self.renderer.render(self.state, self.observation, self.action, step=43, reward=1.25)
         self.assertIs(self.renderer.simulation_values, simulation_values)
         np.testing.assert_array_equal(simulation_values, [50, 43, 1.25])

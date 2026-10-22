@@ -110,7 +110,7 @@ class HeliRender:
 
         self.target_id = self.native.create_guiText("Task target", 30.0, 560.0, 250.0, 0.0)
 
-        # Own these arrays because the native GUI retains pointers to them.
+        # Reuse these arrays when sending snapshots to the native GUI.
         self.target_values = np.zeros(4, dtype=np.float32)
         self.native.add_guiText(self.target_id, self.target_text, self.target_values)
         self.info_values = np.zeros(len(self.info_text), dtype=np.float32)

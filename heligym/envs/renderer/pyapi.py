@@ -1,6 +1,7 @@
 import os
 import sys
 import ctypes
+import re
 import numpy as np
 from pathlib import Path
 
@@ -27,10 +28,14 @@ def _to_encode(str_to_encode, encode_type = 'utf-8'):
     """
         Encoding the string into `encode_type` for char pointer of ctypes.
     """
-    return str_to_encode.encode(encode_type)
+    value = os.fspath(str_to_encode) if isinstance(str_to_encode, os.PathLike) else str_to_encode
+    encoded = value if isinstance(value, bytes) else value.encode(encode_type)
+    if b'\0' in encoded:
+        raise ValueError('Native strings must not contain NUL bytes')
+    return encoded
 
 ###################################################################################
-lib.create_window.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p]
+lib.create_window.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_char_p]
 lib.create_window.restype = ctypes.c_void_p
 
 def create_window(w, h, title):
@@ -40,11 +45,16 @@ def create_window(w, h, title):
         >>> h     : Height of window
         >>> title : Title of window.
     """
-    return lib.create_window(w, h, ctypes.c_char_p(_to_encode(title)))  
+    if any(not isinstance(value, (int, np.integer)) or not 0 < value <= 2**31 - 1 for value in (w, h)):
+        raise ValueError('Window dimensions must be positive 32-bit integers')
+    window = lib.create_window(w, h, ctypes.c_char_p(_to_encode(title)))
+    if not window:
+        raise RuntimeError('Native renderer could not create a window; check the graphics/display setup')
+    return window
 
 ###################################################################################
 lib.render.argtypes = [ctypes.c_void_p]
-lib.render.restype = ctypes.c_void_p
+lib.render.restype = None
 
 def render(window):
     """
@@ -94,7 +104,7 @@ def get_key_presses(window):
 
 ###################################################################################
 lib.close.argtypes = [ctypes.c_void_p]
-lib.close.restype = ctypes.c_void_p
+lib.close.restype = None
 
 def close(window):
     """
@@ -114,7 +124,7 @@ def is_close(window):
 
 ###################################################################################
 lib.terminate.argtypes = []
-lib.terminate.restype = ctypes.c_void_p
+lib.terminate.restype = None
 
 def terminate():
     """
@@ -130,13 +140,16 @@ def create_model(object_path, vertex_shader_path, fragment_shader_path):
     """
         Create model with its shaders.
     """
-    return lib.create_model(ctypes.c_char_p(_to_encode(object_path)),
+    model = lib.create_model(ctypes.c_char_p(_to_encode(object_path)),
                             ctypes.c_char_p(_to_encode(vertex_shader_path)),
                             ctypes.c_char_p(_to_encode(fragment_shader_path)))
+    if not model:
+        raise RuntimeError(f'Native renderer could not load model: {object_path}')
+    return model
 
 ###################################################################################
 lib.add_permanent_to_window.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-lib.add_permanent_to_window.restypes = ctypes.c_void_p
+lib.add_permanent_to_window.restype = None
 
 def add_permanent_to_window(window, model):
     """
@@ -146,7 +159,7 @@ def add_permanent_to_window(window, model):
 
 ###################################################################################
 lib.add_instantaneous_to_window.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-lib.add_instantaneous_to_window.restypes = ctypes.c_void_p
+lib.add_instantaneous_to_window.restype = None
 
 def add_instantaneous_to_window(window, model):
     """ 
@@ -157,7 +170,7 @@ def add_instantaneous_to_window(window, model):
 ###################################################################################
 lib.translate_model.argtypes = [ctypes.c_void_p, ctypes.c_float, 
                                 ctypes.c_float, ctypes.c_float]
-lib.translate_model.restype = ctypes.c_void_p
+lib.translate_model.restype = None
 
 def translate_model(model, x, y, z):
     """
@@ -168,7 +181,7 @@ def translate_model(model, x, y, z):
 ###################################################################################
 lib.rotate_model.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float, 
                                 ctypes.c_float, ctypes.c_float]
-lib.rotate_model.restype = ctypes.c_void_p
+lib.rotate_model.restype = None
 
 def rotate_model(model, angle, x, y, z):
     """
@@ -179,7 +192,7 @@ def rotate_model(model, angle, x, y, z):
 ###################################################################################
 lib.scale_model.argtypes = [ctypes.c_void_p, ctypes.c_float, 
                                 ctypes.c_float, ctypes.c_float]
-lib.scale_model.restype = ctypes.c_void_p
+lib.scale_model.restype = None
 
 def scale_model(model, x, y, z):
     """
@@ -199,12 +212,14 @@ def get_fps(window):
 
 ###################################################################################
 lib.set_fps.argtypes = [ctypes.c_void_p, ctypes.c_float]
-lib.set_fps.restype = ctypes.c_void_p
+lib.set_fps.restype = None
 
 def set_fps(window, fps):
     """
         Set FPS of the window.
     """
+    if not np.isfinite(fps) or fps <= 0 or 1e9 / fps >= 2**63:
+        raise ValueError('FPS must be finite, positive, and fit the native timer')
     lib.set_fps(window, fps)
 
 ###################################################################################
@@ -215,12 +230,15 @@ def get_camera(window):
     """
         Get Camera pointer of the window.
     """
-    return lib.get_camera(window)
+    camera = lib.get_camera(window)
+    if not camera:
+        raise RuntimeError('Native renderer returned a null camera')
+    return camera
 
 ###################################################################################
 lib.set_camera_pos.argtypes = [ctypes.c_void_p, ctypes.c_float,
                                 ctypes.c_float, ctypes.c_float]
-lib.set_camera_pos.restype = ctypes.c_void_p
+lib.set_camera_pos.restype = None
 
 def set_camera_pos(camera, x, y, z):
     """
@@ -236,7 +254,12 @@ def get_camera_pos(camera):
     """
         Get camera position as float array.
     """
-    return lib.get_camera_pos(camera)
+    if not camera:
+        raise ValueError('Camera handle must not be null')
+    position = lib.get_camera_pos(camera)
+    if not position:
+        raise RuntimeError('Native renderer returned a null camera position')
+    return np.ctypeslib.as_array(position, shape=(3,)).copy()
 
 
 def update_helicopter_camera(window, north, east, down, bearing):
@@ -263,7 +286,7 @@ def is_visible(window):
 
 ###################################################################################
 lib.hide_window.argtypes = [ctypes.c_void_p]
-lib.hide_window.restype = ctypes.c_void_p
+lib.hide_window.restype = None
 
 def hide_window(window):
     """
@@ -273,7 +296,7 @@ def hide_window(window):
 
 ###################################################################################
 lib.show_window.argtypes = [ctypes.c_void_p]
-lib.show_window.restype = ctypes.c_void_p
+lib.show_window.restype = None
 
 def show_window(window):
     """
@@ -295,37 +318,62 @@ def create_guiText(window, title, pos, size):
 
 ###################################################################################
 lib.add_guiText.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p), np.ctypeslib.ndpointer(dtype=np.float32, flags='C_CONTIGUOUS')]
-lib.add_guiText.restype = ctypes.c_void_p
+lib.add_guiText.restype = None
+
+_GUI_FLOAT_FORMAT = re.compile(r'%%|%[-+ #0]*[0-9]*(?:\.[0-9]+)?[eEfFgGaA]')
+
+
+def _gui_labels(labels):
+    encoded = []
+    for label in labels:
+        text = label.decode('utf-8') if isinstance(label, bytes) else label
+        if not isinstance(text, str):
+            raise ValueError('GUI labels must be strings')
+        formats = _GUI_FLOAT_FORMAT.findall(text)
+        if '%' in _GUI_FLOAT_FORMAT.sub('', text) or sum(f != '%%' for f in formats) > 1:
+            raise ValueError('GUI labels support at most one float placeholder per row')
+        encoded.append(_to_encode(text))
+    return encoded
+
+
+def _gui_values(values, expected):
+    array = np.atleast_1d(np.asarray(values, dtype=np.float32))
+    if array.ndim != 1 or array.size != expected:
+        raise ValueError(f'GUI requires exactly {expected} values in a one-dimensional array')
+    return np.ascontiguousarray(array)
+
 
 def add_guiText(window, guiText, strn, val):
-    """
-        Add the str and val to guiText on window.
-    """
-    assert type(strn) == list, 'Please make sure that `str` values in form of list.'
-    for ind, item in enumerate(strn):
-        strn[ind] = bytes(str(item), 'utf-8')
-    strn_arr = (ctypes.c_char_p * (len(strn)))()    
-    strn_arr[:] = strn
+    """Copy labels and matching values without modifying caller-owned objects."""
+    labels = _gui_labels(strn)
+    values = _gui_values(val, len(labels))
+    strings = (ctypes.c_char_p * len(labels))(*labels)
+    add = lib.add_guiText_checked
+    add.argtypes = lib.add_guiText.argtypes
+    add.restype = ctypes.c_bool
+    if not add(window, guiText, len(labels), strings, values):
+        raise ValueError('Invalid GUI section or value buffer')
 
-    if type(val) != np.ndarray:
-        val = np.array(val)
 
-    lib.add_guiText(window, guiText, len(strn), strn_arr, val.astype(np.float32) )
+lib.set_guiText.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                           np.ctypeslib.ndpointer(dtype=np.float32, flags='C_CONTIGUOUS')]
+lib.set_guiText.restype = None
 
-###################################################################################
-lib.set_guiText.argtypes = [ctypes.c_void_p, ctypes.c_int, np.ctypeslib.ndpointer(dtype=np.float32, flags='C_CONTIGUOUS')]
-lib.set_guiText.restype = ctypes.c_void_p
 
-def set_guiText(window, guiText, str, val):
-    """
-        Set the str and val to guiText on window.
-    """
-    lib.set_guiText(window, guiText, val.astype(np.float32) )
+def set_guiText(window, guiText, labels, val):
+    """Update a complete GUI section; native code checks its stored row count."""
+    values = _gui_values(val, len(labels))
+    update = lib.set_guiText_checked
+    update.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                      np.ctypeslib.ndpointer(dtype=np.float32, flags='C_CONTIGUOUS')]
+    update.restype = ctypes.c_bool
+    if not update(window, guiText, len(values), values):
+        raise ValueError('Invalid GUI section or mismatched stored row count')
 
 ###################################################################################
 lib.rotate_MR.argtypes = [ctypes.c_void_p, ctypes.c_float, 
                                 ctypes.c_float, ctypes.c_float]
-lib.rotate_MR.restype = ctypes.c_void_p
+lib.rotate_MR.restype = None
 
 def rotate_MR(model, x, y, z):
     """
@@ -336,7 +384,7 @@ def rotate_MR(model, x, y, z):
 ###################################################################################
 lib.rotate_TR.argtypes = [ctypes.c_void_p, ctypes.c_float, 
                                 ctypes.c_float, ctypes.c_float]
-lib.rotate_TR.restype = ctypes.c_void_p
+lib.rotate_TR.restype = None
 
 def rotate_TR(model, x, y, z):
     """
@@ -348,5 +396,6 @@ def rotate_TR(model, x, y, z):
 def set_guiText_row_count(window, section, count):
     """Limit visible rows without reallocating native GUI buffers."""
     lib.set_guiText_row_count.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-    lib.set_guiText_row_count.restype = None
-    lib.set_guiText_row_count(window, section, count)
+    lib.set_guiText_row_count.restype = ctypes.c_bool
+    if not lib.set_guiText_row_count(window, section, count):
+        raise ValueError('Invalid GUI section')

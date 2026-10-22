@@ -127,6 +127,8 @@ def parse_args(argv=None):
                                  'stabilize', 'smooth-stabilize', 'goto', 'heli'],
                         default='hover', 
                         help='environment task; forward is an alias for forward-flight (default: hover); see task descriptions above')
+    environment.add_argument('--flip-angle', type=float, default=-30.0,
+                             help='flip failure threshold: elevation of body up vector above horizon in degrees, [-90, 90] (default: -30)')
     environment.add_argument('--episode-seconds', 
                         type=float, 
                         default=40.0,
@@ -296,7 +298,7 @@ def parse_args(argv=None):
     saved_settings = args.target_dir / 'arguments.json'
     if 'train' not in commands and ('eval' in commands or ('render' in commands and not args.manual)) and saved_settings.is_file():
         config = json.loads(saved_settings.read_text())
-        run_fields = ('algorithm', 'task', 'heli_name', 'episode_seconds',
+        run_fields = ('algorithm', 'task', 'heli_name', 'episode_seconds', 'flip_angle',
                       'no_wind', 'wind_speed', 'wind_direction', 'turbulence_level',
                       'no_online_normalization', 'seed', 'n_envs')
         parser.set_defaults(**{key: config[key] for key in run_fields if key in config})
@@ -312,6 +314,8 @@ def parse_args(argv=None):
         parser.error('--wind-speed must be finite and nonnegative')
     if args.wind_direction is not None and not math.isfinite(args.wind_direction):
         parser.error('--wind-direction must be finite')
+    if not math.isfinite(args.flip_angle) or not -90.0 <= args.flip_angle <= 90.0:
+        parser.error('--flip-angle must be finite and between -90 and 90 degrees')
     # These are supplied by the runner, rather than algorithm hyperparameters.
     reserved = {'policy', 'env', 'seed', 'device', 'verbose', 'tensorboard_log'}
     if reserved.intersection(args.algo_kwargs):
@@ -320,7 +324,7 @@ def parse_args(argv=None):
 
 
 def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
-             wind_speed=None, wind_direction=None, turbulence_level=None, monitor=True):
+             wind_speed=None, wind_direction=None, turbulence_level=None, monitor=True, flip_angle=-30.0):
     """Construct each worker locally so no native objects cross process boundaries."""
     import heligym
     classes = {'hover': heligym.HeliHover, 'forward': heligym.HeliForwardFlight,
@@ -333,7 +337,7 @@ def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
         wind_speed=wind_speed, wind_direction=wind_direction,
         turbulence_level=turbulence_level).items() if value is not None}
     env = classes[task](heli_name=heli_name, render_mode=render_mode,
-                        wind_enabled=not no_wind, **weather)
+                        wind_enabled=not no_wind, flip_angle=flip_angle, **weather)
     env.set_max_time(episode_seconds)
     if monitor:
         from stable_baselines3.common.monitor import Monitor
@@ -377,6 +381,28 @@ def agent_settings(args):
     return settings
 
 
+def episode_end_reasons(info, terminated, truncated, render=False):
+    """Describe all reported terminal conditions, including simultaneous ones."""
+    reasons = []
+    if info.get('numerical_failure'):
+        detail = info.get('numerical_failure_reason')
+        reasons.append('error (numerical failure)' + (f': {detail}' if detail else ''))
+    for key, label in (('crash', 'crash'), ('flip', 'flip'),
+                       ('outside_limits', 'outside simulation limits')):
+        if info.get(key):
+            reasons.append(label)
+    if info.get('failed') and not reasons:
+        reasons.append('failure (unspecified)')
+    if info.get('successed') and not info.get('failed'):
+        reasons.append('success')
+    if truncated:
+        reasons.append('max time (truncated)' if info.get('time_up') else 'truncated')
+    if not reasons:
+        reasons.append('terminated (unspecified)' if terminated else
+                       'window closed' if render else 'stopped')
+    return reasons
+
+
 def run_episode(model, args, normalization_path, seed, render=False):
     """Run one episode with frozen normalization and original task rewards."""
     import numpy as np
@@ -391,7 +417,7 @@ def run_episode(model, args, normalization_path, seed, render=False):
         factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
                           render_mode='human' if render else None, no_wind=args.no_wind,
                           wind_speed=args.wind_speed, wind_direction=args.wind_direction,
-                          turbulence_level=args.turbulence_level)
+                          turbulence_level=args.turbulence_level, flip_angle=args.flip_angle)
         if model is None:
             env = factory(monitor=False)
             raw_env = env
@@ -419,6 +445,7 @@ def run_episode(model, args, normalization_path, seed, render=False):
         total_reward = 0.0
         steps = 0
         terminated = truncated = False
+        final_info = {}
         if render:
             log_status(f'GUI ready: pilot={helicopter.pilot_mode}; M switches pilot when an agent is available; P pauses/resumes; Esc closes.')
             helicopter.render()
@@ -452,6 +479,7 @@ def run_episode(model, args, normalization_path, seed, render=False):
                             obs = env.normalize_obs(obs)
                         total_reward = 0.0
                         steps = 0
+                        final_info = {}
                         control_keys.clear()
                     elif manual:
                         control_keys.append(key)
@@ -471,7 +499,7 @@ def run_episode(model, args, normalization_path, seed, render=False):
                 predicted, _ = model.predict(obs, deterministic=True)
                 action = predicted[0]
             # Bypass VecEnv auto-reset to preserve the terminal frame and reward.
-            raw_obs, reward, terminated, truncated, _ = raw_env.step(action)
+            raw_obs, reward, terminated, truncated, final_info = raw_env.step(action)
             total_reward += float(reward)
             steps += 1
             if render:
@@ -484,7 +512,8 @@ def run_episode(model, args, normalization_path, seed, render=False):
             if render:
                 time.sleep(max(0.0, DT - (time.perf_counter() - start)))
         return dict(seed=seed, steps=steps, reward=total_reward,
-                    terminated=bool(terminated), truncated=bool(truncated))
+                    terminated=bool(terminated), truncated=bool(truncated),
+                    termination_reasons=episode_end_reasons(final_info, terminated, truncated, render))
     finally:
         env.close()
 
@@ -578,7 +607,7 @@ def train(algorithm, args):
     write_json(args.target_dir / 'arguments.json', config)
     factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
                       no_wind=args.no_wind, wind_speed=args.wind_speed,
-                      wind_direction=args.wind_direction, turbulence_level=args.turbulence_level)
+                      wind_direction=args.wind_direction, turbulence_level=args.turbulence_level, flip_angle=args.flip_angle)
     backend = 'subprocess' if args.n_envs > 1 and args.vec_env == 'subproc' else 'sequential'
     with progress(f'Creating {args.n_envs} training environments ({backend})'):
         if args.n_envs > 1 and args.vec_env == 'subproc':
@@ -669,7 +698,8 @@ def main(argv=None):
                 else:
                     result = run_episode(None if args.manual else model, args, normalization_path,
                                          args.seed + args.n_envs, render=True)
-                    print(f"Rendered episode: steps={result['steps']}, return={result['reward']:.3f}")
+                    reasons = "; ".join(result.get("termination_reasons", ["unspecified"]))
+                    print(f"Rendered episode: steps={result['steps']}, return={result['reward']:.3f}, termination={reasons}")
             elif command == 'plot':
                 plot_statistics(args.target_dir)
 

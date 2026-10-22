@@ -1,12 +1,38 @@
 #include "py_api.h"
 #include <cstdint>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+
+static std::vector<std::unique_ptr<Window>>& owned_windows()
+{
+    static std::vector<std::unique_ptr<Window>> windows;
+    return windows;
+}
+
+static std::vector<std::unique_ptr<Model>>& owned_models()
+{
+    static std::vector<std::unique_ptr<Model>> models;
+    return models;
+}
 
 
 Window* create_window(const unsigned int WIDTH,
 		const unsigned int HEIGHT,
 		const char* title)
 {
-	return new Window(WIDTH, HEIGHT, title);
+    try {
+        // GLFW termination and the ImGui context are global in this renderer.
+        if (!owned_windows().empty()) throw std::runtime_error("Only one renderer window may be active; terminate it before creating another");
+        std::unique_ptr<Window> window(new Window(WIDTH, HEIGHT, title));
+        Window* pointer = window.get();
+        owned_windows().push_back(std::move(window));
+        return pointer;
+    }
+    catch (const std::exception& error) {
+        std::cerr << "Renderer initialization failed: " << error.what() << std::endl;
+        return nullptr;
+    }
 }
 
 
@@ -52,12 +78,25 @@ void wait_events()
 
 void terminate()
 {
-	glfwTerminate();
+    for (const auto& window : owned_windows()) window->shutdown_gui();
+    glfwTerminate();
+    owned_models().clear();
+    owned_windows().clear();
 }
 
 Model* create_model(char* model_path, char* vertex_shader_file_path, char* fragment_shader_file_path)
 {
-	return new Model(model_path, vertex_shader_file_path, fragment_shader_file_path);
+    try {
+        if (owned_windows().empty()) throw std::runtime_error("Create a renderer window before loading models");
+        std::unique_ptr<Model> model(new Model(model_path, vertex_shader_file_path, fragment_shader_file_path));
+        Model* pointer = model.get();
+        owned_models().push_back(std::move(model));
+        return pointer;
+    }
+    catch (const std::exception& error) {
+        std::cerr << "Model loading failed: " << error.what() << std::endl;
+        return nullptr;
+    }
 }
 
 
@@ -99,8 +138,11 @@ float get_fps(Window* window)
 
 void set_fps(Window* window, float fps)
 {
-	window->FPS_limit = fps;
-	std::chrono::nanoseconds dt{static_cast<long int>( 1000000000.0f/window->FPS_limit)};
+    const double nanoseconds = 1e9 / static_cast<double>(fps);
+    if (!std::isfinite(nanoseconds) || nanoseconds <= 0 ||
+        nanoseconds >= static_cast<double>(std::numeric_limits<std::chrono::nanoseconds::rep>::max())) return;
+    window->FPS_limit = fps;
+    std::chrono::nanoseconds dt{static_cast<std::chrono::nanoseconds::rep>(nanoseconds)};
 	window->dt = dt;
 }
 
@@ -183,7 +225,27 @@ void update_helicopter_camera(Window* window, float north, float east, float dow
 	window->update_helicopter_camera(north, east, down, bearing);
 }
 
-void set_guiText_row_count(Window* window, int section, int count)
+bool set_guiText_row_count(Window* window, int section, int count)
 {
+    if (!window || section < 0 || section >= window->v_guiTextSection.size()) return false;
     window->set_guiText_row_count(section, count);
+    return true;
+}
+
+bool add_guiText_checked(Window* window, int section, int size, char** labels, float* values)
+{
+    if (!window || section < 0 || section >= window->v_guiTextSection.size() ||
+        size < 0 || (size > 0 && (!labels || !values))) return false;
+    for (int i = 0; i < size; ++i) if (!labels[i]) return false;
+    add_guiText(window, section, size, labels, values);
+    return true;
+}
+
+bool set_guiText_checked(Window* window, int section, int size, float* values)
+{
+    if (!window || section < 0 || section >= window->v_guiTextSection.size() ||
+        size < 0 || size != window->v_guiTextSection[section]->textVector->size() ||
+        (size > 0 && !values)) return false;
+    set_guiText(window, section, values);
+    return true;
 }
