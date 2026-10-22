@@ -214,7 +214,7 @@ class Renderer(object):
     def get_camera_pos(self):
         """
             Get Camera position of `Renderer's` window.
-            Return will be float array.
+            Return an owned float array in NED coordinates (north, east, down).
         """
         self._ensure_open()
         position = pyapi.get_camera_pos(self.camera)

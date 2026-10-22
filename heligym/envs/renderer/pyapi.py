@@ -317,7 +317,7 @@ def create_guiText(window, title, pos, size):
     return lib.create_guiTextVector(window, ctypes.c_char_p(_to_encode(title)), pos[0], pos[1], size[0], size[1])
 
 ###################################################################################
-lib.add_guiText.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p), np.ctypeslib.ndpointer(dtype=np.float32, flags='C_CONTIGUOUS')]
+lib.add_guiText.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p), np.ctypeslib.ndpointer(dtype=np.float32, flags=('C_CONTIGUOUS', 'ALIGNED'))]
 lib.add_guiText.restype = None
 
 _GUI_FLOAT_FORMAT = re.compile(r'%%|%[-+ #0]*[0-9]*(?:\.[0-9]+)?[eEfFgGaA]')
@@ -340,7 +340,7 @@ def _gui_values(values, expected):
     array = np.atleast_1d(np.asarray(values, dtype=np.float32))
     if array.ndim != 1 or array.size != expected:
         raise ValueError(f'GUI requires exactly {expected} values in a one-dimensional array')
-    return np.ascontiguousarray(array)
+    return np.require(array, dtype=np.float32, requirements=['C', 'A'])
 
 
 def add_guiText(window, guiText, strn, val):
@@ -356,7 +356,7 @@ def add_guiText(window, guiText, strn, val):
 
 
 lib.set_guiText.argtypes = [ctypes.c_void_p, ctypes.c_int,
-                           np.ctypeslib.ndpointer(dtype=np.float32, flags='C_CONTIGUOUS')]
+                           np.ctypeslib.ndpointer(dtype=np.float32, flags=('C_CONTIGUOUS', 'ALIGNED'))]
 lib.set_guiText.restype = None
 
 
@@ -365,7 +365,7 @@ def set_guiText(window, guiText, labels, val):
     values = _gui_values(val, len(labels))
     update = lib.set_guiText_checked
     update.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
-                      np.ctypeslib.ndpointer(dtype=np.float32, flags='C_CONTIGUOUS')]
+                      np.ctypeslib.ndpointer(dtype=np.float32, flags=('C_CONTIGUOUS', 'ALIGNED'))]
     update.restype = ctypes.c_bool
     if not update(window, guiText, len(values), values):
         raise ValueError('Invalid GUI section or mismatched stored row count')

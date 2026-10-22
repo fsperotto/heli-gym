@@ -111,6 +111,11 @@ int main()
     assert(window.dt.count() > 9000000000LL);
 
     window.camera = new Camera(glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    Camera* camera_handle = get_camera(&window);
+    assert(camera_handle == window.camera);
+    set_camera_pos(camera_handle, 1.0f, 2.0f, 3.0f);
+    float* camera_values = get_camera_pos(camera_handle);
+    assert(camera_values[0] == 1.0f && camera_values[1] == 2.0f && camera_values[2] == 3.0f);
     window.update_helicopter_camera(0.0f, 0.0f, 0.0f, 0.0f);
     assert(std::abs(window.camera->Position.z - 30.0f) < 1e-5f);
     window.follow_helicopter_bearing = true;

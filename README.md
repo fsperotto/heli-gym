@@ -389,7 +389,7 @@ heli-gym/
 ├── test.py                            # Interactive simulation/demo entry point
 ├── pyproject.toml                     # Package metadata, dependencies, and included data
 ├── uv.lock                            # Reproducible Python dependency lockfile
-├── setup_install.sh                   # Guided uv/virtual-environment installer
+├── setup_install.sh                   # Guided Conda/uv/virtual-environment installer
 ├── init.sh                            # Convenience script for activating the local environment
 ├── LICENSE                            # MIT licence
 └── README.md                          # Project overview and user documentation
@@ -405,7 +405,20 @@ Install the package directly with pip:
 pip install -e .
 ```
 
-Alternatively, source the guided installation script. It uses `uv` to create a local `.venv` and install the package:
+Alternatively, run or source the guided installer. When a Conda environment is
+active (including `base`), it first asks whether to install into that environment.
+If declined, it asks whether to create a Conda environment at the project's
+`.venv` path, with Python 3.12 and pip. Conda environments are identified by their
+prefix paths; see the [Conda environment guide](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#specifying-a-location-for-an-environment).
+The editable project and training dependencies are installed using the selected
+environment's `python -m pip`, so another environment's pip is never used.
+
+With no active Conda environment, or after declining both Conda options, the
+existing uv/pip/standard-venv workflow runs. An existing `.venv` is never silently
+overwritten. After a successful installation, the installer rewrites `init.sh`
+with activation commands for the selected environment, including environments
+outside the project. Run `source ./init.sh` to activate it. Sourcing the installer
+itself does not change the caller's active environment or working directory.
 
 ```bash
 source setup_install.sh

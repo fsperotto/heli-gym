@@ -66,6 +66,10 @@ class RendererBindingTests(unittest.TestCase):
         self.assertEqual(list(args[3]), [b'SPEED %.2f', b'Progress 100%%'])
         self.assertEqual(args[4].dtype, np.float32)
         self.assertTrue(args[4].flags.c_contiguous)
+        unaligned = np.ndarray(shape=(2,), dtype=np.float32, buffer=bytearray(9), offset=1)
+        self.assertFalse(unaligned.flags.aligned)
+        self.binding.add_guiText(1, 0, labels, unaligned)
+        self.assertTrue(self.lib.add_guiText_checked.call_args.args[4].flags.aligned)
 
     def test_gui_rejects_short_or_multidimensional_buffers(self):
         for values in ([], [1.], [[1., 2.]]):
