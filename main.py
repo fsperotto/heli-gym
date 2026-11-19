@@ -29,7 +29,7 @@ Tasks:
     smooth-stabilize, smooth-hover
         Add a weighted mean-square penalty on control changes and magnitudes.
     goto
-        Pursue random north/east/altitude targets supplied in the observation.
+        Pursue random waypoints using north/east/altitude differences in the observation.
         Reaching a target draws the next one without ending the episode.
     heli
         Use the base helicopter environment. It has no task goal or shaped

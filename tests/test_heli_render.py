@@ -19,9 +19,9 @@ class HeliRenderTests(unittest.TestCase):
         self.renderer = HeliRender(native_renderer=self.native)
         panels = {call.args[0]: call.args[1:3] for call in self.native.create_guiText.call_args_list}
         self.assertEqual(panels['Observations'][0], panels['Wind'][0])
-        self.assertEqual(panels['Wind'][0], panels['Task target'][0])
+        self.assertEqual(panels['Wind'][0], panels['Target differences'][0])
         self.assertLess(panels['Observations'][1], panels['Wind'][1])
-        self.assertLess(panels['Wind'][1], panels['Task target'][1])
+        self.assertLess(panels['Wind'][1], panels['Target differences'][1])
         self.native.reset_mock()
         self.state = {
             "betas": np.array([0.1, 0.2]),
@@ -50,7 +50,14 @@ class HeliRenderTests(unittest.TestCase):
     def test_simulation_metrics_are_separate_from_observations(self):
         simulation_values = self.renderer.simulation_values
         self.renderer.render(self.state, self.observation, self.action, step=42, reward=-2.5)
-        np.testing.assert_array_equal(self.renderer.info_values, self.observation)
+        expected = np.arange(17, dtype=np.float32)
+        expected[7:13] = np.rad2deg(expected[7:13])
+        np.testing.assert_allclose(self.renderer.info_values, expected)
+        np.testing.assert_array_equal(self.observation, np.arange(17, dtype=np.float32))
+        self.assertEqual(
+            [label.split()[-1] for label in self.renderer.info_text[7:13]],
+            ['deg'] * 3 + ['deg/sec'] * 3,
+        )
         np.testing.assert_array_equal(simulation_values, [50, 42, -2.5])
         self.assertFalse(any('FPS' in label for label in self.renderer.info_text))
         self.native.set_guiText.assert_any_call(
@@ -78,10 +85,10 @@ class HeliRenderTests(unittest.TestCase):
     def test_target_marker_uses_north_east_down_coordinates(self):
         self.native.create_model.side_effect = None
         self.native.create_model.return_value = 'target'
-        target = np.array([100., 200., 300., 0.])
+        target = np.array([100., 200., 300., 0., np.pi / 2])
         self.renderer.render(self.state, self.observation, self.action,
                              target=target, target_position=target[:3])
-        np.testing.assert_array_equal(self.renderer.target_values, target)
+        np.testing.assert_allclose(self.renderer.target_values, [100., 200., 300., 0., 90.])
         self.native.translate_model.assert_any_call(
             'target', 100. * FT2MTR, 200. * FT2MTR, -300. * FT2MTR)
         self.native.add_instantanous_object_to_window.assert_called_once_with('target')

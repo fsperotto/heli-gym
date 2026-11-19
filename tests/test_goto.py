@@ -10,29 +10,33 @@ import main
 
 
 class TaskObservationTests(unittest.TestCase):
-    def test_default_targets_follow_current_measurements(self):
+    def test_target_differences_use_current_minus_target(self):
         env = heligym.Heli(render_mode=None, wind_enabled=False)
         try:
             observation, _ = env.reset(seed=42)
-            self.assertEqual(observation.shape, (25,))
+            self.assertEqual(observation.shape, (26,))
             self.assertTrue(env.observation_space.contains(observation))
             np.testing.assert_array_equal(observation[:17], env.heli_dyn.observation.astype(np.float32))
-            np.testing.assert_allclose(observation[17:20], observation[13:16])
-            self.assertAlmostEqual(observation[20], np.linalg.norm(observation[4:7]))
+            np.testing.assert_array_equal(observation[17:22], np.zeros(5))
             raw = env.heli_dyn.observation.copy()
-            raw[13:16] = [12., 34., 56.]
+            raw[13:16] = [0., 5., 56.]
             raw[4:7] = [3., 4., 0.]
-            np.testing.assert_array_equal(env._agent_observation(raw)[17:21], [12, 34, 56, 5])
-            env.set_target(dict(north_loc=100, sea_alt=500, vel=20))
-            np.testing.assert_array_equal(env._agent_observation(raw)[17:21], [100, 34, 500, 20])
+            raw[9] = np.deg2rad(-179.)
+            env.set_target((None, None, None, None, None))
+            np.testing.assert_array_equal(env._agent_observation(raw)[17:22], np.zeros(5))
+            env.set_target((3., 3., 50., 20., np.deg2rad(179.)))
+            np.testing.assert_allclose(env._agent_observation(raw)[17:22],
+                                       [-3., 2., 6., -15., np.deg2rad(2.)], atol=1e-6)
+            env.set_target(dict(north_loc=3, sea_alt=50))
+            np.testing.assert_array_equal(env._agent_observation(raw)[17:22], [-3, 0, 6, 0, 0])
         finally:
             env.close()
 
-    def test_hover_exposes_its_fixed_position_target(self):
+    def test_hover_exposes_differences_from_its_fixed_position_target(self):
         env = heligym.HeliHover(render_mode=None, wind_enabled=False)
         try:
             observation, _ = env.reset(seed=42)
-            np.testing.assert_array_equal(observation[17:20], [0, 0, 2000])
+            np.testing.assert_allclose(observation[17:20], env.heli_dyn.observation[13:16] - [0, 0, 2000])
         finally:
             env.close()
 
@@ -48,16 +52,18 @@ class GotoTests(unittest.TestCase):
         env = self.env
         first, _ = env.reset(seed=42)
         initial = env.heli_dyn.observation[13:16].copy()
-        target = first[17:20].copy()
+        target = env.get_target()
+        target = np.array([target["north_loc"], target["east_loc"], target["sea_alt"]])
+        np.testing.assert_allclose(first[17:20], initial - target)
         np.testing.assert_array_equal(env.reset(seed=42)[0], first)
         self.assertGreater(np.linalg.norm(target - initial), env.target_radius)
         self.assertTrue(np.all(np.abs(target[:2] - initial[:2]) <= 100.))
         self.assertGreaterEqual(target[2] + 1e-3,
                                 env.heli_dyn.ground_height_at(*target[:2]) + 50.)
-        self.assertEqual(env.get_target()['vel'], 0.)
-        self.assertEqual(first[20], 0.)
+        self.assertIsNone(env.get_target().get('vel'))
+        np.testing.assert_array_equal(first[20:22], [0., 0.])
         other, _ = env.reset(seed=43)
-        self.assertFalse(np.array_equal(other[17:20], target))
+        self.assertFalse(np.array_equal(other[17:20], first[17:20]))
 
     def test_arrival_rewards_old_target_then_returns_new_target_without_termination(self):
         env = self.env
@@ -74,8 +80,10 @@ class GotoTests(unittest.TestCase):
         self.assertFalse(terminated)
         self.assertFalse(truncated)
         self.assertEqual(info['targets_reached'], 1)
-        self.assertFalse(np.array_equal(observation[17:20], old_target))
-        np.testing.assert_array_equal(observation[17:20], info['target_position'])
+        self.assertFalse(np.array_equal(info['target_position'], old_target))
+        np.testing.assert_allclose(observation[17:20],
+                                   env.heli_dyn.observation[13:16] - info['target_position'],
+                                   atol=2e-4)
         self.assertTrue(env.observation_space.contains(observation))
         env.successed_time = env.success_duration + 1
         self.assertFalse(env._is_successed())
@@ -89,7 +97,7 @@ class GotoTests(unittest.TestCase):
         raw[4:7] = [3., 4., 0.]
         self.assertEqual(env._agent_observation(raw)[20], 0.)
         env._draw_target()
-        self.assertEqual(env.get_target()['vel'], 0.)
+        self.assertIsNone(env.get_target().get('vel'))
         self.assertEqual(env._agent_observation(raw)[20], 0.)
         # Even a position-only target keeps goto's unused speed field zero.
         env.set_target(dict(north_loc=0., east_loc=0., sea_alt=2000.))
@@ -157,7 +165,7 @@ class GotoTests(unittest.TestCase):
         try:
             self.assertIsInstance(wrapped.unwrapped, heligym.HeliGoto)
             observation, _ = wrapped.reset(seed=42)
-            self.assertEqual(observation.shape, (25,))
+            self.assertEqual(observation.shape, (26,))
         finally:
             wrapped.close()
         self.assertEqual(gym.spec('HeliGoto-v0').entry_point, 'heligym.envs:HeliGoto')

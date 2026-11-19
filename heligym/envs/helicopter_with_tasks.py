@@ -3,16 +3,34 @@ import numpy as np
 from .helicopter import Heli
 
 class HeliHover(Heli):
-    def __init__(self, heli_name:str = "aw109", render_mode="human",
-                 wind_enabled=True, target_altitude=2000, **heli_kwargs):
-        Heli.__init__(self, heli_name=heli_name, render_mode=render_mode,
-                      wind_enabled=wind_enabled, **heli_kwargs)
+    """
+    Hover at a specified altitude.
+
+    Args:
+        Heli : The base helicopter environment class.
+    """
+    def __init__(self, 
+                 heli_name:str="aw109", 
+                 render_mode="human",
+                 wind_enabled=True, 
+                 target_altitude=2000, 
+                 **heli_kwargs):
+
+        Heli.__init__(self, 
+                      heli_name=heli_name, 
+                      render_mode=render_mode,
+                      wind_enabled=wind_enabled,
+                      need_normalized_state=True, 
+                      **heli_kwargs)
+        
         max_time = Heli.default_max_time
+
         task_target = {
             "sea_alt": target_altitude,
             "north_loc": 0,
             "east_loc": 0
         }
+
         trim_cond = {
             "yaw": 0.0,
             "yaw_rate": 0.0,
@@ -22,30 +40,23 @@ class HeliHover(Heli):
             "psi_mr": 0.0,
             "psi_tr": 0.0
         }
+
         self.set_max_time(max_time)
         self.set_target(task_target)
         self.set_trim_cond(trim_cond)
 
+
     def _calculate_reward(self):
-        xyz_norm = self.heli_dyn.state["xyz"] / self.normalizers["x"]
-        xyzdot_norm = self.heli_dyn.state_dots["xyz"] / self.normalizers["v"]
-        pqr_norm = self.heli_dyn.state["pqr"] * self.normalizers["t"] 
-        pqrdot_norm = self.heli_dyn.state_dots["pqr"] * self.normalizers["t"]**2
 
-        xyz_target_norm = np.array([self.task_target["north_loc"], self.task_target["east_loc"], -self.task_target["sea_alt"]], dtype=np.float32) / self.normalizers["x"]
+        # reward relative to the attitude and angular velocity
+        pqr_final_reward = - (self.pqr_norm * self.pqr_norm).sum()  # negative sum of squares of normalized angular velocities
+        pqr_terminal_reward = - (np.sign(self.pqr_norm) * self.pqrdot_norm).sum() # negative if angular velocity is in the same direction as the angular acceleration, positive if opposite
+        pqr_reward = max(pqr_final_reward, pqr_terminal_reward)
 
-        pqr_final_reward = - (pqr_norm * pqr_norm).sum()
-        pqr_terminal_reward = - (np.sign(pqr_norm) * pqrdot_norm).sum()
-        pqr_reward = max(
-            pqr_final_reward,
-            pqr_terminal_reward)
-
-        xyz_final_reward = - ((xyz_norm - xyz_target_norm) * (xyz_norm - xyz_target_norm)).sum()
-        xyz_terminal_reward = - (np.sign(xyz_norm - xyz_target_norm) * xyzdot_norm).sum()
-
-        xyz_reward = max(
-            xyz_final_reward,
-            xyz_terminal_reward)
+        # reward relative to the position and velocity
+        xyz_final_reward = - ((self.xyz_norm - self.xyz_target_norm) * (self.xyz_norm - self.xyz_target_norm)).sum()
+        xyz_terminal_reward = - (np.sign(self.xyz_norm - self.xyz_target_norm) * self.xyzdot_norm).sum()
+        xyz_reward = max(xyz_final_reward, xyz_terminal_reward)
 
         reward = (pqr_reward + xyz_reward) / 2.0
 
@@ -78,14 +89,9 @@ class HeliGoto(HeliHover):
         self.target_radius = float(target_radius)
         self.target_ground_clearance = float(target_ground_clearance)
         self.targets_reached = 0
-        super().__init__(*args, **kwargs)
-        # No speed objective; expose a fixed zero target speed.
-        self.set_target(dict(vel=0.0))
 
-    def _task_observation(self, dynamics_observation):
-        observation = super()._task_observation(dynamics_observation)
-        observation[3] = 0.0  # Speed is not an objective for this task.
-        return observation
+        super().__init__(*args, need_normalized_state=True, **kwargs)
+
 
     def _draw_target(self):
         position = self.heli_dyn.state['xyz']
@@ -101,7 +107,7 @@ class HeliGoto(HeliHover):
                 -self.target_altitude_range, self.target_altitude_range),
                 ground + self.target_ground_clearance)
             if np.linalg.norm(np.array([north, east, altitude]) - current) > self.target_radius:
-                self.set_target(dict(north_loc=north, east_loc=east, sea_alt=altitude, vel=0.0))
+                self.set_target(dict(north_loc=north, east_loc=east, sea_alt=altitude))
                 return
         raise RuntimeError('Could not sample a goto target outside the arrival radius')
 

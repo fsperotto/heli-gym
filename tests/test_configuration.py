@@ -18,6 +18,12 @@ class ConfigurationTests(unittest.TestCase):
             gravity=30.0,
         )
         try:
+            self.assertEqual(env.helicopter_ident, "AW109")
+            self.assertEqual(env.helicopter_name, "Leonardo / AgustaWestland AW109")
+            self.assertEqual(env.operational_constraints, {
+                "SAFE_ROLL": 30.0, "MAX_ROLL": 60.0,
+                "SAFE_PITCH": 15.0, "MAX_PITCH": 25.0,
+            })
             np.testing.assert_allclose(env.wind_dyn.wind_mean_ned, [0.0, 12.0, 0.0],
                                        atol=1e-6)
             self.assertEqual(env.wind_dyn.turbulence_level, 3)

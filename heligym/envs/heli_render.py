@@ -4,6 +4,7 @@ import numpy as np
 
 
 FT2MTR = 0.3048
+ANGULAR_OBSERVATIONS = slice(7, 13)
 
 
 class HeliRender:
@@ -38,6 +39,7 @@ class HeliRender:
             "EAST       : %8.2f ft",
             "ALTITUDE   : %8.2f ft",
             "SPEED      : %8.2f ft/s",
+            "HEADING    : %8.2f deg",
         ]
         self.info_text = [
             "POWER      : %5.2f hp",
@@ -47,12 +49,12 @@ class HeliRender:
             "N_VEL      : %5.2f ft/s",
             "E_VEL      : %5.2f ft/s",
             "DES_RATE   : %5.2f ft/s",
-            "ROLL       : %5.2f rad",
-            "PITCH      : %5.2f rad",
-            "YAW        : %5.2f rad",
-            "ROLL_RATE  : %5.2f rad/sec",
-            "PITCH_RATE : %5.2f rad/sec",
-            "YAW_RATE   : %5.2f rad/sec",
+            "ROLL       : %5.2f deg",
+            "PITCH      : %5.2f deg",
+            "YAW        : %5.2f deg",
+            "ROLL_RATE  : %5.2f deg/sec",
+            "PITCH_RATE : %5.2f deg/sec",
+            "YAW_RATE   : %5.2f deg/sec",
             "N_POS      : %5.2f ft",
             "E_POS      : %5.2f ft",
             "ALT        : %5.2f ft",
@@ -108,10 +110,10 @@ class HeliRender:
             "Command Instructions", 570.0, 30.0, 360.0, 0.0
         )
 
-        self.target_id = self.native.create_guiText("Task target", 30.0, 560.0, 250.0, 0.0)
+        self.target_id = self.native.create_guiText("Target differences", 30.0, 560.0, 250.0, 0.0)
 
         # Reuse these arrays when sending snapshots to the native GUI.
-        self.target_values = np.zeros(4, dtype=np.float32)
+        self.target_values = np.zeros(len(self.target_text), dtype=np.float32)
         self.native.add_guiText(self.target_id, self.target_text, self.target_values)
         self.info_values = np.zeros(len(self.info_text), dtype=np.float32)
         self.action_values = np.zeros(4, dtype=np.float32)
@@ -139,6 +141,7 @@ class HeliRender:
 
         if target is not None:
             self.target_values[:] = target
+            self.target_values[4] = np.rad2deg(self.target_values[4])
         else:
             self.target_values.fill(0.)
         self.native.set_guiText(self.target_id, self.target_text, self.target_values)
@@ -159,6 +162,8 @@ class HeliRender:
         self.command_values[0] = float(pilot_mode == 'agent')
         self.native.set_guiText(self.command_id, self.command_text, self.command_values)
         self.info_values[:] = observation
+        angular_values = self.info_values[ANGULAR_OBSERVATIONS]
+        np.rad2deg(angular_values, out=angular_values)
         self.simulation_values[:] = (self.native.get_fps(), step, reward)
         self.action_values[:] = action
         self.wind_values.fill(0.0)

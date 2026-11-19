@@ -30,21 +30,19 @@ python main.py plot --target-dir runs/hover            # plot saved statistics o
 python main.py render --target-dir runs/hover          # one episode in the GUI
 ```
 
-Each environment observation now contains 25 values, in this order:
+Each environment observation contains 26 values, in this order:
 
 - 17 measurements produced by the helicopter dynamics.
-- 4 task targets: local north position, east position, sea altitude (feet), and
-  scalar ground-relative speed (ft/s). North/east are local Cartesian coordinates,
-  not latitude/longitude. Altitude is positive upwards.
+- 5 target differences for local north position, east position, sea altitude
+  (feet, positive up), scalar ground-relative speed (ft/s), and heading (radians).
 - 4 previous applied control commands.
 
-The task layer adds the targets without modifying the physics observation.
-Unspecified target fields mirror the corresponding current measurement on every
-step; they impose no extra reward objective. Tasks override fields through
-`set_target`, using `north_loc`, `east_loc`, `sea_alt`, and `vel`. Existing hover
-and forward-flight tasks expose their respective configured targets.
-Previously trained 21-value policies and normalization files need retraining for
-this expanded observation space.
+Target differences are current measurement minus target. The heading difference
+is wrapped to `[-π, π)`. Each unspecified or `None` target contributes zero.
+Pass a mapping to `set_target` with keys `north_loc`, `east_loc`, `sea_alt`,
+`vel`, and `heading`, or pass a five-item tuple in that order. Hover and
+forward-flight use their respective configured targets. Policies and
+normalization statistics from earlier observation layouts need retraining.
 
 Across all tasks, a crash or flip terminates the episode with a fixed **−100**
 reward, replacing that step's task reward. `info['crash']` and `info['flip']`
@@ -64,8 +62,8 @@ ground contact alone is not a crash. Existing map/altitude limits and numerical
 failure handling remain active; the episode time limit remains a truncation.
 
 Use `--task goto` to pursue a continuing sequence of random position targets.
-Its target-speed observation is fixed at zero, including while moving and after
-waypoint changes; speed is not included in its reward.
+Its sampled waypoints leave speed and heading unspecified, so both differences
+are zero.
 Its reward is `progress_weight * (previous_distance - current_distance)` plus
 `arrival_reward` when entering the target radius. Distances are straight-line 3D
 distances in feet to the same active target. Defaults are `progress_weight=0.1`
@@ -73,8 +71,8 @@ and `arrival_reward=100`: closing 100 ft yields 10 progress points, while reachi
 the target yields 100 bonus points. Moving at constant distance yields zero
 progress reward; moving away yields a negative reward. There are no separate
 velocity, angular-motion, attitude, or action penalties. On arrival within a 10 ft 3D radius, the
-reward is calculated for the reached target, then a new target is returned in
-the observation. Arrival does not end the episode. Targets are sampled within
+reward is calculated for the reached target, then the observation reports
+differences from the new target. Arrival does not end the episode. Targets are sampled within
 ±100 ft north/east and ±50 ft altitude of the current position; altitude is raised
 where necessary to maintain 50 ft clearance above terrain at the target.
 Targets remain within map boundaries and outside the arrival radius. The usual
@@ -190,7 +188,7 @@ again. If stationary trim cannot converge or requires controls beyond their
 limits, the prior state is restored and an error is printed. This key works in
 both pilot modes and while paused.
 **H** hides/shows all info panels and control bars (shown initially). Both toggles
-also work while paused. The left column stacks Observations, Wind, then Task target.
+also work while paused. The left column stacks Observations, Wind, then Target differences. The heading difference is displayed in degrees.
 Agent mode hides manual flight/reset instructions while retaining shared controls.
 The rendered episode summary includes termination reasons, for example:
 `Rendered episode: steps=659, return=-105.178, termination=flip`.
@@ -302,10 +300,15 @@ The other physical arguments are `gas_constant`, `sea_level_temperature`,
 | 14  | y loc (earth)      | ft    | -∞    | ∞      |  
 | 15  | sea altitude       | ft    | 0     | ∞      |
 | 16  | ground altitude    | ft    | 0     | ∞      |
-| 17  | previous collective|       | -1    | 1      |
-| 18  | previous lon. cyclic|      | -1    | 1      |
-| 19  | previous lat. cyclic|      | -1    | 1      |
-| 20  | previous pedal     |       | -1    | 1      |
+| 17  | north difference   | ft    | -∞    | ∞      |
+| 18  | east difference    | ft    | -∞    | ∞      |
+| 19  | altitude difference| ft    | -∞    | ∞      |
+| 20  | speed difference   | ft/s  | -∞    | ∞      |
+| 21  | heading difference | rad   | -π    | π (exclusive) |
+| 22  | previous collective|       | -1    | 1      |
+| 23  | previous lon. cyclic|      | -1    | 1      |
+| 24  | previous lat. cyclic|      | -1    | 1      |
+| 25  | previous pedal     |       | -1    | 1      |
 
 At reset, the previous controls are the trim controls used to create the
 initial steady-flight state. After each step, they are the direct controls

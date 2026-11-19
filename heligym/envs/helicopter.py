@@ -60,8 +60,12 @@ class Heli(gym.Env, EzPickle):
 
     # default task target
     default_task_target = {}
-    task_observation_names = ("TARGET_NORTH", "TARGET_EAST", "TARGET_ALTITUDE", "TARGET_SPEED")
+    task_target_keys = ("north_loc", "east_loc", "sea_alt", "vel", "heading")
+    task_observation_names = ("TARGET_NORTH_DIFF", "TARGET_EAST_DIFF",
+                              "TARGET_ALTITUDE_DIFF", "TARGET_SPEED_DIFF",
+                              "TARGET_HEADING_DIFF")
     n_task_obs = len(task_observation_names)
+
 
     def __init__(self,
                  heli_name:str = "aw109",
@@ -77,11 +81,25 @@ class Heli(gym.Env, EzPickle):
                  troposphere_height=DEFAULT_WEATHER["troposphere_height"],
                  sea_level_air_density=DEFAULT_WEATHER["sea_level_air_density"],
                  gravity=DEFAULT_WEATHER["gravity"],
-                 flip_angle=-30.0):
+                 flip_angle=-30.0,
+                 need_normalized_state=False):
 
         if not np.isfinite(flip_angle) or not -90.0 <= flip_angle <= 90.0:
             raise ValueError('flip_angle must be finite and between -90 and 90 degrees')
         self.flip_angle = float(flip_angle)
+
+        #if true, calculate normalized state at each step (often necessary for calculating rewards)
+        self.need_normalized_state = need_normalized_state
+
+        #normalized state
+        self.xyz_norm = None     #helicopter's earth-relative position normalized by the position normalizer
+        self.xyzdot_norm = None  #helicopter's earth-relative velocity normalized by the velocity normalizer
+        self.uvw_norm = None     #helicopter's body-relative velocity normalized by the velocity normalizer
+        self.uvwdot_norm = None  #helicopter's body-relative acceleration normalized by the acceleration normalizer
+        self.pqr_norm = None     #helicopter's body-relative angular velocity normalized by the angular velocity normalizer
+        self.pqrdot_norm = None  #helicopter's body-relative angular acceleration normalized by the angular acceleration normalizer
+        self.xyz_target_norm = None  #target's earth-relative position normalized by the position normalizer
+
 
         EzPickle.__init__(self,
                           heli_name=heli_name,
@@ -168,6 +186,21 @@ class Heli(gym.Env, EzPickle):
             self.renderer = HeliRender(heli_name=model_name, fps=FPS)
         self.paused = False
         self.pilot_mode = 'manual'
+
+    @property
+    def helicopter_ident(self):
+        """Return the aircraft identifier from the configuration, if present."""
+        return self.heli_dyn.HELI.get("IDENT")
+
+    @property
+    def helicopter_name(self):
+        """Return the full aircraft name from the configuration, if present."""
+        return self.heli_dyn.HELI.get("NAME")
+
+    @property
+    def operational_constraints(self):
+        """Return a copy of the configured constraints in their YAML units."""
+        return copy.deepcopy(self.heli_dyn.HELI.get("OP", {}))
        
     # Setter functions for RL tasks
     def set_max_time(self, max_time=None):
@@ -175,9 +208,15 @@ class Heli(gym.Env, EzPickle):
         self.success_duration = self.max_time/4 # [sec] Required successfull time for maneuver
         self.task_duration = self.max_time/4 # [sec] Allowed time for successing task
 
-    def set_target(self, target={}):
-        self.task_target = copy.deepcopy(self.default_task_target)
-        self.task_target.update(target)
+    def set_target(self, target=()):
+        """Set targets by name or as a five-item tuple in observation order."""
+        if isinstance(target, tuple) and target:
+            if len(target) != len(self.task_target_keys):
+                raise ValueError("Expected five targets: north, east, altitude, speed, heading")
+            target = dict(zip(self.task_target_keys, target))
+        task_target = copy.deepcopy(self.default_task_target)
+        task_target.update(target)
+        self.task_target = task_target
 
     def get_target(self):
         return copy.deepcopy(self.task_target)
@@ -350,6 +389,8 @@ class Heli(gym.Env, EzPickle):
                         and np.isfinite(self.heli_dyn.state.val).all()
                         and np.isfinite(self.heli_dyn.state_dots.val).all()):
                     raise FloatingPointError("Non-finite helicopter dynamics")
+                if self.need_normalized_state:
+                    self._set_normalized_state()
                 info = self._get_info()
                 if info['crash'] or info['flip']:
                     reward, successed_step = self.FAILURE_REWARD, False
@@ -371,25 +412,31 @@ class Heli(gym.Env, EzPickle):
             self.previous_action = actions.copy()
             self.current_reward = self.FAILURE_REWARD
             return self._agent_observation(previous_obs), self.current_reward, True, False, info
-        done = info['failed'] or info['successed']
+        terminated = info['failed'] or info['successed']
         truncated = info['time_up']
         self.successed_time += DT if successed_step else 0
         self.previous_action = actions.copy()
         self.current_reward = float(reward)
-        return self._agent_observation(observation), self.current_reward, bool(done), bool(truncated), info
+        return self._agent_observation(observation), self.current_reward, bool(terminated), bool(truncated), info
 
     def _task_observation(self, dynamics_observation):
-        """Resolve task targets; unspecified values mirror current measurements.
+        """Return current minus target, with zero for unspecified targets.
 
         Positions are local north/east feet and positive-up sea altitude.
-        The fourth component is scalar ground-relative speed in ft/s.
+        Speed is ground-relative in ft/s. Heading is yaw in radians.
         """
         current = (*dynamics_observation[13:16],
-                   np.linalg.norm(dynamics_observation[4:7]))
-        return np.asarray([
-            current[i] if self.task_target.get(key) is None else self.task_target[key]
-            for i, key in enumerate(('north_loc', 'east_loc', 'sea_alt', 'vel'))
-        ], dtype=np.float32)
+                   np.linalg.norm(dynamics_observation[4:7]),
+                   dynamics_observation[9])
+        differences = np.zeros(self.n_task_obs, dtype=np.float32)
+        for i, (key, value) in enumerate(zip(self.task_target_keys, current)):
+            target = self.task_target.get(key)
+            if target is not None:
+                difference = float(value) - target
+                if key == "heading":
+                    difference = (difference + math.pi) % TAU - math.pi
+                differences[i] = difference
+        return differences
 
     def _render_target_position(self):
         keys = ('north_loc', 'east_loc', 'sea_alt')
@@ -404,7 +451,7 @@ class Heli(gym.Env, EzPickle):
         """Update task state after rewarding a successful physics step."""
 
     def _agent_observation(self, dynamics_observation):
-        """Combine physics measurements, task targets, and previous controls."""
+        """Combine physics measurements, target differences, and previous controls."""
         return np.concatenate((dynamics_observation,
                                self._task_observation(dynamics_observation),
                                self.previous_action)).astype(np.float32, copy=False)
@@ -468,6 +515,32 @@ class Heli(gym.Env, EzPickle):
 
     def _is_time_up(self):
         return self.time_counter > self.max_time
+
+    def _set_normalized_state(self):
+        """
+            | Quantity | Where it lives	| Meaning | Units |
+            | xyz	   | state["xyz"]   | Position along North, East, and Down | ft |
+            | xyzdot   | state_dots["xyz"] | Northward, eastward, and downward velocity | ft/s |
+            | uvw	   | state["uvw"] | Ground-relative velocity along the helicopter's forward, right, and down axes | ft/s |
+            | uvwdot   | state_dots["uvw"] | Time derivative of the three body-frame velocity components | ft/s² |
+            | pqr	   | state["pqr"] | Angular velocity about the body's forward (roll), right (pitch), and down (yaw) axes | rad/s |
+            | pqrdot   | state_dots["pqr"]	Angular acceleration about those same body axes | rad/s² |        
+
+            The environment uses the main rotor diameter \(D = 2R\) and gravitational acceleration \(g\) to define:
+              - a length scale \(D\), 
+              - a time scale \(T = \sqrt{D/g}\), 
+              - a speed scale \(V = \sqrt{Dg}\), and 
+              - an acceleration scale \(g\).
+        """
+
+        self.xyz_norm = self.heli_dyn.state["xyz"] / self.normalizers["x"]
+        self.xyzdot_norm = self.heli_dyn.state_dots["xyz"] / self.normalizers["v"]
+        self.uvw_norm = self.heli_dyn.state["uvw"] / self.normalizers["v"]
+        self.uvwdot_norm = self.heli_dyn.state_dots["uvw"] / self.normalizers["g"]
+        self.pqr_norm = self.heli_dyn.state["pqr"] * self.normalizers["t"] 
+        self.pqrdot_norm = self.heli_dyn.state_dots["pqr"] * self.normalizers["t"]**2
+        self.xyz_target_norm = np.array([self.task_target["north_loc"], self.task_target["east_loc"], -self.task_target["sea_alt"]], dtype=np.float32) / self.normalizers["x"]
+
 
     def _calculate_reward(self):
         return 0.0, False

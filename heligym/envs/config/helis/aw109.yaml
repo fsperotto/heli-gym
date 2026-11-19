@@ -1,4 +1,6 @@
 HELI:
+    IDENT       : "AW109"
+    NAME        : "Leonardo / AgustaWestland AW109"
     HP_LOSS     : 90    # [hp] Accessory Power loss (probably)
     VTRANS      : 50    # [ft/s] Downwash transition speed
     FS_CG       : 132.7 # [in] helicopter horizontal CG loc.
@@ -19,7 +21,7 @@ HELI:
     PED_L       : -15.  # [deg] Pedal Low
     PED_H       : 15.   # [deg] Pedal High
 
-    MR:
+    MR:  # main rotor
         FS     : 132.4 # [in] hub horizontal location in FS-ref station
         WL     : 98.2 # [in] hub vertical location in FS-ref station
         IS     : 0.11 # [rad] forward shaft tilt incidence
@@ -34,7 +36,7 @@ HELI:
         TWST   : -0.105 # [rad] Blade Twist
         K1     : 0.096 # Blade pitch-flap coupling
 
-    TR:
+    TR:  # tail rotor
         FS     : 391 # [in] hub horizontal location in FS-ref station
         WL     : 70 # [in] hub vertical location in FS-ref station
         R      : 3.1 # [ft] Rotor Radius
@@ -45,7 +47,7 @@ HELI:
         TWST   : -0.137 # [rad] Blade Twist
         B      : 2 # number of blades
 
-    FUS:
+    FUS:  # fuselage
         FS     : 132 # [in] horizontal CP loc. in FS-ref station
         WL     : 38 # [in] vertical CP loc. in FS-ref station
         XUU    : -10.8 # [ft^2] parasite
@@ -82,3 +84,10 @@ HELI:
         FS_MN  : 187 # [inch] horizontal position of Main LG
         FS_N   : 40 # [inch] horizontal position of Nose LG
         WL     : -22 # [inch] vertical position of LG
+
+    OP:   # operational constraints
+        SAFE_ROLL :  30.0  # [deg] limit roll (bank) angle (+/-) for safe normal flight
+        MAX_ROLL :   60.0  # [deg] maximum roll (bank) angle (+/-) in extreme conditions
+        SAFE_PITCH : 15.0  # [deg] limit pitch angle (+/-) for safe normal flight
+        MAX_PITCH :   25.0  # [deg] maximum pitch angle (+/-) in extreme conditions
+        
