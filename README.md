@@ -18,7 +18,7 @@ working display forwarding.
 ## Training and saved runs
 
 Install the optional training dependencies with `pip install -e '.[train]'`.
-`main.py` accepts the positional commands `tune`, `train`, `eval`, `plot`, and `render`.
+`main.py` accepts the positional commands `tune`, `train`, `eval`, `record`, `plot`, and `render`.
 With no command it prints help. Selected commands run in pipeline order.
 
 ```bash
@@ -27,6 +27,36 @@ python main.py train eval --target-dir runs/hover      # headless training and e
 python main.py eval plot --target-dir runs/hover       # evaluate a saved policy and plot statistics
 python main.py plot --target-dir runs/hover            # plot saved statistics only
 python main.py render --target-dir runs/hover          # one episode in the GUI
+```
+
+### Record an episode
+
+```bash
+python main.py record --target-dir runs/hover
+```
+
+This runs one deterministic, headless episode using the saved policy and the
+same seed as the first evaluation episode (`seed + n_envs`) by default. Pass
+`--seed` to use that seed directly for recording. It writes the
+following files to `<target-dir>/record/`. A later recording replaces those files.
+
+- `config.json` contains the effective configuration, episode seed, and artifact paths.
+- `summary.json` contains the step count, total reward, duration, success flag,
+  and termination reasons.
+- `actions.csv` contains the four applied controls for each step, starting at 1.
+- `observations.csv` contains raw environment observations. Step 0 is the reset
+  observation, and each later row is the observation after the action on that
+  step, including the terminal observation.
+- `figure.png` shows controls and observations over time, one subplot per signal.
+  The plot is on by default. Use `--no-record-plot` to save just the JSON and CSV files.
+
+To record multiple episodes, pass `--num-records`. This writes the same
+files per episode under `<target-dir>/records/000001/`, `000002/`, and so on.
+Seeds increment by one per episode. A new batch replaces the numbered folders
+it writes.
+
+```bash
+python main.py record --target-dir runs/hover --num-records 3 --seed 100
 ```
 
 Each environment observation contains 29 values, in this order:

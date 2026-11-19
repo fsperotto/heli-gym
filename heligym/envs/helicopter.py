@@ -69,6 +69,15 @@ class Heli(gym.Env, EzPickle):
     n_task_obs = len(task_observation_names)
 
 
+    action_names = ("collective", "longitudinal_cyclic", "lateral_cyclic", "pedal")
+    observation_names = (
+        "power_hp", "longitudinal_airspeed_ft_s", "lateral_airspeed_ft_s",
+        "downward_airspeed_ft_s", "north_velocity_ft_s", "east_velocity_ft_s",
+        "downward_velocity_ft_s", "roll_rad", "pitch_rad", "yaw_rad",
+        "body_roll_rate_rad_s", "body_pitch_rate_rad_s", "body_yaw_rate_rad_s",
+        "north_position_ft", "east_position_ft", "sea_altitude_ft", "ground_clearance_ft",
+    ) + task_observation_names + tuple(f"previous_{name}" for name in action_names)
+
     def __init__(self,
                  heli_name:str = "aw109",
                  terrain_name: str = "default_terrain",

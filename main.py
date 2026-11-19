@@ -1,8 +1,8 @@
-"""Train, evaluate, plot statistics, or render a helicopter controller.
+"""Train, evaluate, record, plot statistics, or render a helicopter controller.
 
-Commands run in pipeline order: tune -> train -> eval -> plot -> render.
+Commands run in pipeline order: tune -> train -> eval -> record -> plot -> render.
 With no command, display help. Select one or more commands to run those stages. eval runs deterministic episodes without a GUI; render shows one episode.
-Standalone eval/render load the model and saved run settings from --target-dir;
+Standalone eval/record/render load the model and saved run settings from --target-dir;
 explicit command-line settings override saved settings.
 
 Examples:
@@ -13,6 +13,7 @@ Examples:
     python main.py train eval --target-dir runs/hover --task hover
     python main.py train --total-timesteps 128 --n-envs 1 --n-steps 128 --batch-size 64
     python main.py eval plot --target-dir runs/hover
+    python main.py record --target-dir runs/hover
     python main.py render --target-dir runs/hover
 
 Install training dependencies with: pip install -e '.[train]'
@@ -38,6 +39,7 @@ Tasks:
 """
 import argparse
 from contextlib import contextmanager
+import csv
 from datetime import datetime
 from functools import partial
 import json
@@ -47,11 +49,12 @@ import random
 import shlex
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 from zoneinfo import ZoneInfo
 
 
-COMMANDS = ('tune', 'train', 'eval', 'plot', 'render')
+COMMANDS = ('tune', 'train', 'eval', 'record', 'plot', 'render')
 
 
 def log_status(message, end='\n'):
@@ -160,7 +163,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('commands', nargs='*', metavar='COMMAND',
-                        help='tune, train, eval, plot, render; selected stages run in that order')
+                        help='tune, train, eval, record, plot, render; selected stages run in that order')
     parameter_source = parser.add_mutually_exclusive_group()
     parameter_source.add_argument('--file-args', type=Path,
                         help='JSON defaults such as final_params.json; explicit CLI options override them')
@@ -237,6 +240,10 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
                         choices=[0, 1, 2], 
                         default=1,
                         help='algorithm training verbosity: 0 silent, 1 info, 2 debug; runner messages still print (default: 1)')
+    execution.add_argument('--num-records', type=positive_int,
+                        help='record N episodes under <target-dir>/records with consecutive seeds')
+    execution.add_argument('--record-plot', action=argparse.BooleanOptionalAction, default=True,
+                        help='save a time-series figure with each recording (default: enabled)')
     execution.add_argument('--eval-episodes', type=positive_int, default=10,
                         help='number of deterministic episodes for headless eval (default: 10); render always runs one episode')
 
@@ -244,7 +251,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     output.add_argument('--target-dir', 
                         type=Path, 
                         default=Path(f'runs/local-{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}'),
-                        help='run directory for models, settings and statistics; eval/plot/render read saved artifacts here (default: runs/local-<timestamp>)')
+                        help='run directory for models, settings and statistics; eval/record/plot/render read saved artifacts here (default: runs/local-<timestamp>)')
     tensorboard = output.add_mutually_exclusive_group()
     tensorboard.add_argument('--tensorboard', dest='tensorboard', action='store_true',
                              help='enable training TensorBoard logs in <target-dir>/tensorboard_log')
@@ -345,7 +352,8 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     tuning.add_argument('--n-trials', type=nonnegative_int, default=20,
                         help='additional search trials (default: 20)')
     tuning.add_argument('--trial-timesteps', type=positive_int, default=245760)
-    tuning.add_argument('--refinement-timesteps', type=positive_int, default=983040)
+    tuning.add_argument('--refinement-timesteps', type=positive_int, default=300000,
+                        help='training transitions per refinement run (default: 300000)')
     tuning.add_argument('--finalists', type=positive_int, default=3)
     tuning.add_argument('--refinement-seeds', type=positive_int, default=3,
                         help='fresh training seeds per finalist and baseline')
@@ -376,10 +384,11 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     if file_defaults:
         parser.set_defaults(**file_defaults)
         args = parser.parse_intermixed_args(argv)
-    # Reuse the training configuration for independent evaluation/rendering.
+    # Reuse the training configuration for independent evaluation, recording, and rendering.
     # Parsing again preserves explicit CLI overrides, including --algorithm.
     saved_settings = args.target_dir / 'arguments.json'
-    if 'tune' not in commands and 'train' not in commands and ('eval' in commands or ('render' in commands and not args.manual)) and saved_settings.is_file():
+    if 'tune' not in commands and 'train' not in commands and ('eval' in commands or 'record' in commands
+            or ('render' in commands and not args.manual)) and saved_settings.is_file():
         config = json.loads(saved_settings.read_text())
         if config.get('flip_angle') is not None and 'flip_angle_reference' not in config:
             config['flip_angle'] = 90 - config['flip_angle']
@@ -414,6 +423,11 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     reserved = {'policy', 'env', 'seed', 'device', 'verbose', 'tensorboard_log'}
     if reserved.intersection(args.algo_kwargs):
         parser.error('--algo-kwargs cannot override ' + ', '.join(sorted(reserved)))
+    if 'record' in commands:
+        explicit_seed = any(arg == '--seed' or arg.startswith('--seed=') for arg in argv)
+        args.record_seed = args.seed if explicit_seed or 'seed' in file_defaults else args.seed + args.n_envs
+        if args.record_seed < 0 or args.record_seed + (args.num_records or 1) > 2**32:
+            parser.error('recording seeds must be in [0, 2**32)')
     args.command_line = shlex.join([sys.executable, "main.py", *argv])
     return args
 
@@ -517,7 +531,7 @@ def episode_end_reasons(info, terminated, truncated, render=False):
     return reasons
 
 
-def run_episode(model, args, normalization_path, seed, render=False):
+def run_episode(model, args, normalization_path, seed, render=False, on_step=None):
     """Run one episode with frozen normalization and original task rewards."""
     import numpy as np
     if render and args.manual:
@@ -556,6 +570,9 @@ def run_episode(model, args, normalization_path, seed, render=False):
                 env.seed(seed)
                 obs = env.reset()
             helicopter = raw_env.unwrapped
+            if on_step is not None:
+                initial_obs = env.get_original_obs() if normalize else obs
+                on_step(0, None, initial_obs[0])
             manual = model is None
             helicopter.pilot_mode = 'manual' if manual else 'agent'
         total_reward = 0.0
@@ -618,6 +635,8 @@ def run_episode(model, args, normalization_path, seed, render=False):
             raw_obs, reward, terminated, truncated, final_info = raw_env.step(action)
             total_reward += float(reward)
             steps += 1
+            if on_step is not None:
+                on_step(steps, helicopter.previous_action, raw_obs)
             if render:
                 helicopter.render()
             if terminated or truncated:
@@ -654,6 +673,84 @@ def evaluate(model, args, normalization_path):
     print(f"Evaluation: mean return={statistics['mean_reward']:.3f}, "
           f"std={statistics['std_reward']:.3f}")
     return statistics
+
+
+def plot_recording(directory, timestep, action_names, observation_names):
+    """Plot the saved control and observation series on a shared time axis."""
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    columns = len(action_names)
+    count = columns + len(observation_names)
+    rows = math.ceil(count / columns)
+    figure = Figure(figsize=(4 * columns, 2 * rows), layout='constrained')
+    FigureCanvasAgg(figure)
+    axes = figure.subplots(rows, columns, sharex=True).ravel()
+    offset = 0
+    for filename, names in (('actions.csv', action_names), ('observations.csv', observation_names)):
+        samples = np.loadtxt(directory / filename, delimiter=',', skiprows=1, ndmin=2)
+        times = samples[:, 0] * timestep
+        for index, name in enumerate(names):
+            axis = axes[offset + index]
+            axis.plot(times, samples[:, index + 1], linewidth=1)
+            axis.set_title(name.replace('_', ' '), fontsize=9)
+            axis.grid(alpha=0.25)
+        offset += len(names)
+    for axis in axes[count:]:
+        axis.set_visible(False)
+    for axis in axes[max(0, count - columns):count]:
+        axis.tick_params(labelbottom=True)
+    figure.supxlabel('Time (s)')
+    figure.savefig(directory / 'figure.png', dpi=140)
+
+
+def record_episode(model, args, normalization_path, seed=None, directory=None):
+    """Save one seeded evaluation episode with raw observations and applied controls."""
+    from heligym.envs.helicopter import DT, Heli
+
+    seed = args.record_seed if seed is None else seed
+    directory = args.target_dir / 'record' if directory is None else directory
+    args.target_dir.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=args.target_dir, prefix='.record-') as temporary:
+        staging = Path(temporary)
+        with (staging / 'actions.csv').open('w', newline='') as actions_file, \
+                (staging / 'observations.csv').open('w', newline='') as observations_file:
+            actions = csv.writer(actions_file)
+            observations = csv.writer(observations_file)
+            actions.writerow(('step', *Heli.action_names))
+            observations.writerow(('step', *Heli.observation_names))
+
+            def write_step(step, action, observation):
+                if action is not None:
+                    actions.writerow((step, *action))
+                observations.writerow((step, *observation))
+
+            summary = run_episode(model, args, normalization_path, seed, on_step=write_step)
+
+        config = {key: str(value) if isinstance(value, Path) else value
+                  for key, value in vars(args).items()}
+        config.update(episode_seed=seed, timestep_seconds=DT, deterministic=True,
+                      model_path=str((args.target_dir / 'model.zip').resolve()),
+                      normalization_path=(None if args.no_online_normalization else
+                                          str(normalization_path.resolve())),
+                      flip_angle_reference='upright',
+                      saved_at=datetime.now(ZoneInfo('Europe/Paris')).isoformat(timespec='seconds'))
+        summary.update(success='success' in summary['termination_reasons'],
+                       duration_seconds=summary['steps'] * DT)
+        write_json(staging / 'config.json', config)
+        write_json(staging / 'summary.json', summary)
+        filenames = ['actions.csv', 'observations.csv', 'config.json']
+        if args.record_plot:
+            plot_recording(staging, DT, Heli.action_names, Heli.observation_names)
+            filenames.append('figure.png')
+        directory.mkdir(parents=True, exist_ok=True)
+        if not args.record_plot:
+            (directory / 'figure.png').unlink(missing_ok=True)
+        for name in (*filenames, 'summary.json'):
+            (staging / name).replace(directory / name)
+    log_status(f"Recorded {summary['steps']} steps to {directory.resolve()}")
+    return summary
 
 
 def write_json(path, value):
@@ -811,7 +908,7 @@ def main(argv=None):
         with progress('Preparing renderer library paths', multiline=True):
             prepare_renderer()
 
-    if any(command in args.commands for command in ('train', 'eval')) or ('render' in args.commands and not args.manual):
+    if any(command in args.commands for command in ('train', 'eval', 'record')) or ('render' in args.commands and not args.manual):
         with progress('Importing PyTorch'):
             import torch
         with progress('Importing Stable Baselines3'):
@@ -829,11 +926,19 @@ def main(argv=None):
         with progress(f'Running {command} command', multiline=True):
             if command == 'train':
                 model = train(algorithm, args)
-            elif command in ('eval', 'render'):
-                if model is None and (command == 'eval' or not args.manual):
+            elif command in ('eval', 'record', 'render'):
+                if model is None and (command in ('eval', 'record') or not args.manual):
                     model = load_model(algorithm, args)
                 if command == 'eval':
                     evaluate(model, args, normalization_path)
+                elif command == 'record':
+                    if args.num_records is None:
+                        record_episode(model, args, normalization_path)
+                    else:
+                        for index in range(args.num_records):
+                            directory = args.target_dir / 'records' / f'{index + 1:06d}'
+                            record_episode(model, args, normalization_path,
+                                           seed=args.record_seed + index, directory=directory)
                 else:
                     result = run_episode(None if args.manual else model, args, normalization_path,
                                          args.seed + args.n_envs, render=True)

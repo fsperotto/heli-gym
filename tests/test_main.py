@@ -405,6 +405,36 @@ class EpisodeTests(unittest.TestCase):
             self.assertEqual(restored.obs_rms.count, count)
             restored.close()
 
+    def test_record_writes_applied_actions_and_terminal_observation(self):
+        import csv
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main.write_json(root / 'arguments.json', {
+                'task': 'heli', 'no_wind': True, 'no_online_normalization': True,
+                'episode_seconds': .04, 'seed': 12, 'n_envs': 1,
+            })
+            args = main.parse_args(['record', '--target-dir', directory])
+            model = Mock()
+            model.predict.return_value = (np.array([[2., 0., 0., 0.]]), None)
+            summary = main.record_episode(model, args, root / 'vecnormalize.pkl')
+            recording = root / 'record'
+            self.assertEqual((recording / 'figure.png').read_bytes()[:8], b'\x89PNG\r\n\x1a\n')
+            config = json.loads((recording / 'config.json').read_text())
+            self.assertEqual(config['episode_seed'], 13)
+            self.assertEqual(config['task'], 'heli')
+            self.assertEqual(summary, json.loads((recording / 'summary.json').read_text()))
+            self.assertFalse(summary['success'])
+            with (recording / 'actions.csv').open(newline='') as stream:
+                actions = list(csv.DictReader(stream))
+            with (recording / 'observations.csv').open(newline='') as stream:
+                observations = list(csv.DictReader(stream))
+            self.assertEqual([int(row['step']) for row in actions], list(range(1, summary['steps'] + 1)))
+            self.assertEqual([int(row['step']) for row in observations], list(range(summary['steps'] + 1)))
+            for action, observation in zip(actions, observations[1:]):
+                self.assertEqual(float(action['collective']), 1.)
+                self.assertEqual(action['collective'], observation['previous_collective'])
+
     def test_evaluation_persists_episode_results_and_summary(self):
         with tempfile.TemporaryDirectory() as directory:
             args = main.parse_args(['eval', '--target-dir', directory, '--eval-episodes', '2'])
