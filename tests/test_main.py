@@ -19,7 +19,7 @@ import main
 
 class CommandTests(unittest.TestCase):
     def test_default_and_selected_pipeline(self):
-        self.assertEqual(main.parse_args([]).commands, list(main.COMMANDS))
+        self.assertEqual(main.parse_args([]).commands, [])
         self.assertEqual(main.parse_args(['plot', 'eval', 'plot']).commands,
                          ['eval', 'plot'])
         self.assertEqual(main.parse_args(['--task', 'heli', 'train', '--seed', '7', 'eval']).commands,
@@ -27,6 +27,44 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(main.parse_args(['render']).commands, ['render'])
         self.assertEqual(main.parse_args(['train']).n_checkpoints, 0)
         self.assertEqual(main.parse_args(['train', '--n-checkpoints', '4']).n_checkpoints, 4)
+
+    def test_no_command_prints_help(self):
+        for arguments in ([], ['--task', 'goto'], ['--manual']):
+            with self.subTest(arguments=arguments), contextlib.redirect_stdout(io.StringIO()) as output:
+                main.main(arguments)
+            self.assertTrue(output.getvalue().startswith('usage:'))
+
+    def test_file_args_load_with_cli_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'final_params.json'
+            main.write_json(path, {
+                'task': 'stabilize', 'gamma': .997, 'n_steps': 512,
+                'no_wind': True, 'random_wind': True, 'wind_speed': 12.,
+                'net_arch': [128, 64],
+            })
+            args = main.parse_args(['train', '--file-args', str(path),
+                                    '--wind', '--gamma=.995', '--n-rollout-steps', '1024'])
+            self.assertEqual(args.task, 'stabilize')
+            self.assertEqual(args.gamma, .995)
+            self.assertEqual(args.n_steps, 1024)
+            self.assertEqual(args.net_arch, [128, 64])
+            self.assertFalse(args.no_wind)
+            self.assertEqual(main.run_wind(args, 42), main.sample_wind(42, 12.))
+
+    def test_tuned_parameter_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            study = root / 'optuna'
+            study.mkdir()
+            main.write_json(study / 'final_params.json', {'task': 'hover', 'gamma': .997, 'no_wind': True})
+            for source in (['--use-tuned'], ['--tune-dir', str(study)]):
+                args = main.parse_args(['train', '--target-dir', directory, *source, '--gamma', '.995'])
+                self.assertEqual(args.task, 'hover')
+                self.assertTrue(args.no_wind)
+                self.assertEqual(args.gamma, .995)
+            args = main.parse_args(['tune', 'train', '--target-dir', directory, '--use-tuned'])
+            self.assertEqual(args.task, 'smooth-hover')
+            self.assertEqual(args.commands, ['tune', 'train'])
 
     def test_tensorboard_flags(self):
         self.assertFalse(main.parse_args(['train']).tensorboard)
@@ -48,21 +86,24 @@ class CommandTests(unittest.TestCase):
                 self.assertEqual(main.episode_end_reasons(info, terminated, truncated, render=True), expected)
 
     def test_flip_angle_cli_and_factory(self):
-        self.assertEqual(main.parse_args(['train']).flip_angle, -30.)
-        self.assertEqual(main.parse_args(['render', '--flip-angle', '-10']).flip_angle, -10.)
+        self.assertIsNone(main.parse_args(['train']).flip_angle)
+        self.assertEqual(main.parse_args(['render', '--flip-angle', '100']).flip_angle, 100.)
         with tempfile.TemporaryDirectory() as directory:
             main.write_json(Path(directory) / 'arguments.json', {'flip_angle': -15.})
-            self.assertEqual(main.parse_args(['render', '--target-dir', directory]).flip_angle, -15.)
+            self.assertEqual(main.parse_args(['render', '--target-dir', directory]).flip_angle, 105.)
+            main.write_json(Path(directory) / 'arguments.json',
+                            {'flip_angle': 30., 'flip_angle_reference': 'upright'})
+            self.assertEqual(main.parse_args(['render', '--target-dir', directory]).flip_angle, 30.)
             self.assertEqual(main.parse_args(['render', '--target-dir', directory,
                                              '--flip-angle', '0']).flip_angle, 0.)
-        env = main.make_env('heli', 'aw109', 1., no_wind=True, monitor=False, flip_angle=-20.)
+        env = main.make_env('heli', 'aw109', 1., no_wind=True, monitor=False, flip_angle=110.)
         try:
-            self.assertEqual(env.flip_angle, -20.)
+            self.assertEqual(env.flip_angle, 110.)
         finally:
             env.close()
 
     def test_invalid_commands_and_removed_flags(self):
-        for arguments in (['--flip-angle', '-91'], ['--flip-angle', 'nan'], ['--tensorboard', '--no-tensorboard'], ['--tensorboard-log', 'logs'], ['show'], ['--no-learn'], ['--no-render'], ['--wind', '--no-wind'],
+        for arguments in (['--flip-angle', '-1'], ['--flip-angle', '181'], ['--flip-angle', 'nan'], ['--tensorboard', '--no-tensorboard'], ['--tensorboard-log', 'logs'], ['show'], ['--no-learn'], ['--no-render'], ['--wind', '--no-wind'],
                           ['--no-stats-plot'], ['eval', '--eval-episodes', '0'],
                           ['train', '--wind-speed', '-1'], ['train', '--wind-speed', 'nan'],
                           ['train', '--wind-direction', 'inf'], ['train', '--turbulence-level', '8'],
@@ -131,7 +172,7 @@ class CommandTests(unittest.TestCase):
         episode.assert_not_called()
 
     @unittest.skipIf(DummyVecEnv is None, 'requires training extras')
-    def test_default_pipeline_finishes_with_render(self):
+    def test_explicit_pipeline_finishes_with_render(self):
         events = []
         model = Mock()
         with tempfile.TemporaryDirectory() as directory, \
@@ -143,7 +184,7 @@ class CommandTests(unittest.TestCase):
                              events.append('render') or dict(steps=2, reward=10)) as episode, \
                 patch.object(main, 'load_model') as load, \
                 contextlib.redirect_stdout(io.StringIO()):
-            main.main(['--target-dir', directory])
+            main.main(['render', 'plot', 'eval', 'train', '--target-dir', directory])
         self.assertEqual(events, ['train', 'eval', 'plot', 'render'])
         prepare.assert_called_once()
         self.assertTrue(episode.call_args.kwargs['render'])

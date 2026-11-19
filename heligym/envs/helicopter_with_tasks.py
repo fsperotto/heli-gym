@@ -1,77 +1,82 @@
-
 import numpy as np
 from .helicopter import Heli
 
-class HeliHover(Heli):
-    """
-    Hover at a specified altitude.
 
-    Args:
-        Heli : The base helicopter environment class.
-    """
-    def __init__(self, 
-                 heli_name:str="aw109", 
-                 render_mode="human",
-                 wind_enabled=True, 
-                 target_altitude=2000, 
-                 **heli_kwargs):
+class ApproximateTargetValues(Heli):
+    """Track any subset of Heli.task_target_keys in their physical units."""
 
-        Heli.__init__(self, 
-                      heli_name=heli_name, 
-                      render_mode=render_mode,
-                      wind_enabled=wind_enabled,
-                      need_normalized_state=True, 
-                      **heli_kwargs)
-        
-        max_time = Heli.default_max_time
+    def __init__(self, *args, target=None, mode="progression", diff_impact="linear", **kwargs):
+        if mode not in ("difference", "progression", "attitude"):
+            raise ValueError("Unknown reward mode: " + str(mode))
+        if diff_impact not in ("linear", "quadratic"):
+            raise ValueError("Unknown difference impact: " + str(diff_impact))
+        super().__init__(*args, **kwargs)
+        self.mode = mode
+        self.diff_impact = diff_impact
+        if target is not None:
+            self.set_target(target)
+        n = self.normalizers
+        self._scales = np.array([n["x"], n["x"], n["x"], n["v"], 1.,
+                                 n["v"], n["v"], 1. / n["t"]])
 
-        task_target = {
-            "sea_alt": target_altitude,
-            "north_loc": 0,
-            "east_loc": 0
-        }
+    def _reset_task(self):
+        self._previous_values = self._target_values(self.heli_dyn.state)
 
-        trim_cond = {
-            "yaw": 0.0,
-            "yaw_rate": 0.0,
-            "ned_vel": [0.0, 0.0, 0.0],
-            "gr_alt": 100.0,
-            "xy": [0.0, 0.0],
-            "psi_mr": 0.0,
-            "psi_tr": 0.0
-        }
+    def step(self, actions):
+        self._previous_values = self._target_values(self.heli_dyn.state)
+        return super().step(actions)
 
-        self.set_max_time(max_time)
-        self.set_target(task_target)
-        self.set_trim_cond(trim_cond)
+    def _error(self, values):
+        return self._target_differences(values) / self._scales
 
+    def _cost(self, error):
+        return np.abs(error) if self.diff_impact == "linear" else error ** 2
 
     def _calculate_reward(self):
-
-        # reward relative to the attitude and angular velocity
-        pqr_final_reward = - (self.pqr_norm * self.pqr_norm).sum()  # negative sum of squares of normalized angular velocities
-        pqr_terminal_reward = - (np.sign(self.pqr_norm) * self.pqrdot_norm).sum() # negative if angular velocity is in the same direction as the angular acceleration, positive if opposite
-        pqr_reward = max(pqr_final_reward, pqr_terminal_reward)
-
-        # reward relative to the position and velocity
-        xyz_final_reward = - ((self.xyz_norm - self.xyz_target_norm) * (self.xyz_norm - self.xyz_target_norm)).sum()
-        xyz_terminal_reward = - (np.sign(self.xyz_norm - self.xyz_target_norm) * self.xyzdot_norm).sum()
-        xyz_reward = max(xyz_final_reward, xyz_terminal_reward)
-
-        reward = (pqr_reward + xyz_reward) / 2.0
-
-        success_step = pqr_final_reward > -1.0 and xyz_final_reward > -1.0  
-
-        return reward, success_step
+        error = self._error(self._target_values(self.heli_dyn.state))
+        if self.mode == "attitude":
+            rate = self._target_values(self.heli_dyn.state_dots) * self.normalizers["t"] / self._scales
+            gradient = np.sign(error) if self.diff_impact == "linear" else 2 * error
+            reward = -np.dot(gradient, rate)
+        else:
+            reward = -self._cost(error).sum()
+            if self.mode == "progression":
+                reward += self._cost(self._error(self._previous_values)).sum()
+        active = any(self.task_target.get(key) is not None for key in self.task_target_keys)
+        return float(reward), bool(active and np.all(np.abs(error) < 1.))
 
 
-class HeliGoto(HeliHover):
-    """Pursue a sequence of random, observed position targets."""
+_INITIAL = object()
+
+
+class HeliHover(ApproximateTargetValues):
+    """Hold the reset position, optionally overriding its sea altitude."""
+
+    def __init__(self, heli_name="aw109", render_mode="human", wind_enabled=True,
+                 target_altitude=_INITIAL, **kwargs):
+        super().__init__(heli_name=heli_name, render_mode=render_mode, wind_enabled=wind_enabled, **kwargs)
+        self._hover_altitude = target_altitude
+        self._use_reset_position = kwargs.get("target") is None
+
+    def set_target(self, target=()):
+        super().set_target(target)
+        self._use_reset_position = False
+
+    def _reset_task(self):
+        super()._reset_task()
+        if self._use_reset_position:
+            north, east, altitude = self._previous_values[:3]
+            super().set_target(dict(north_loc=north, east_loc=east,
+                                    sea_alt=altitude if self._hover_altitude is _INITIAL else self._hover_altitude))
+
+
+class HeliGoto(ApproximateTargetValues):
+    """Reach a random waypoint, or keep pursuing new waypoints in continual mode."""
 
     def __init__(self, *args, target_horizontal_range=100.0,
                  target_altitude_range=50.0, target_radius=10.0,
                  target_ground_clearance=50.0, progress_weight=0.1,
-                 arrival_reward=100.0, **kwargs):
+                 arrival_reward=100.0, continual=False, **kwargs):
         values = (target_horizontal_range, target_altitude_range,
                   target_radius, target_ground_clearance)
         if not all(np.isfinite(value) and value > 0 for value in values):
@@ -88,9 +93,11 @@ class HeliGoto(HeliHover):
         self.target_altitude_range = float(target_altitude_range)
         self.target_radius = float(target_radius)
         self.target_ground_clearance = float(target_ground_clearance)
+        self.continual = continual
         self.targets_reached = 0
+        self._waypoints = kwargs.get("target") is None
 
-        super().__init__(*args, need_normalized_state=True, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
     def _draw_target(self):
@@ -112,7 +119,10 @@ class HeliGoto(HeliHover):
         raise RuntimeError('Could not sample a goto target outside the arrival radius')
 
     def _reset_task(self):
+        super()._reset_task()
         self.targets_reached = 0
+        if not self._waypoints:
+            return
         self._draw_target()
         self._previous_position = self.heli_dyn.state['xyz'].copy()
 
@@ -122,6 +132,8 @@ class HeliGoto(HeliHover):
         return float(np.linalg.norm(np.asarray(position, dtype=np.float64) - target))
 
     def _calculate_reward(self):
+        if not self._waypoints:
+            return super()._calculate_reward()
         # Both distances use the same active target. Target switching happens
         # only after this reward has been calculated.
         distance = self._distance_to_target(self.heli_dyn.state['xyz'])
@@ -131,14 +143,18 @@ class HeliGoto(HeliHover):
         return float(reward), bool(reached)
 
     def _update_task(self):
+        if not self._waypoints:
+            return super()._update_task()
         if self._distance_to_target(self.heli_dyn.state['xyz']) <= self.target_radius:
             self.targets_reached += 1
-            self._draw_target()
+            if self.continual:
+                self._draw_target()
         self._previous_position = self.heli_dyn.state['xyz'].copy()
 
     def _is_successed(self):
-        # Reaching a waypoint starts the next leg instead of ending the episode.
-        return False
+        if self._waypoints:
+            return not self.continual and self.targets_reached > 0
+        return super()._is_successed()
 
     def _get_info(self):
         info = super()._get_info()
@@ -147,25 +163,12 @@ class HeliGoto(HeliHover):
         return info
 
 
-class HeliStabilize(Heli):
-    """Reward stopping linear and angular motion at any position or attitude."""
+class HeliStabilize(ApproximateTargetValues):
+    """Bring the three body velocity components to zero."""
 
-    def __init__(self, heli_name: str = "aw109", render_mode="human",
-                 wind_enabled=True, **heli_kwargs):
-        super().__init__(heli_name=heli_name, render_mode=render_mode,
-                         wind_enabled=wind_enabled, **heli_kwargs)
-        self.set_max_time(self.default_max_time)
-
-    def _calculate_reward(self):
-        linear_velocity = self.heli_dyn.state["uvw"] / self.normalizers["v"]
-        angular_velocity = self.heli_dyn.state["pqr"] * self.normalizers["t"]
-        velocities = np.concatenate((linear_velocity, angular_velocity))
-        reward = -np.mean(velocities ** 2)
-
-        speed = np.linalg.norm(self.heli_dyn.state["uvw"])
-        angular_speed = np.linalg.norm(self.heli_dyn.state["pqr"])
-        success_step = speed < 0.5 and angular_speed < 0.01
-        return float(reward), bool(success_step)
+    def __init__(self, heli_name="aw109", render_mode="human", wind_enabled=True, **kwargs):
+        kwargs.setdefault("target", dict(forward_speed=0., lateral_velocity=0., vertical_velocity=0.))
+        super().__init__(heli_name=heli_name, render_mode=render_mode, wind_enabled=wind_enabled, **kwargs)
 
 class _SmoothActions:
     """Penalize mean squared control changes and magnitudes relative to zero.
@@ -196,67 +199,10 @@ class HeliSmoothHover(_SmoothActions, HeliHover):
     """Hold the hover target while penalizing successive control changes."""
 
 
-class HeliForwardFlight(Heli):
+class HeliForwardFlight(HeliGoto):
+    """Track positive-up altitude and signed body-forward speed."""
 
-    def __init__(self, heli_name:str = "aw109", render_mode="human",
-                 wind_enabled=True, target_altitude=2000, **heli_kwargs):
-        Heli.__init__(self, heli_name=heli_name, render_mode=render_mode,
-                      wind_enabled=wind_enabled, **heli_kwargs)
-        max_time = Heli.default_max_time
-        task_target = {
-            "sea_alt": target_altitude,
-            "heading": 0,
-            "vel": 100
-        }
-        trim_cond = {
-            "yaw": 0.0,
-            "yaw_rate": 0.0,
-            "ned_vel": [0.0, 0.0, 0.0],
-            "gr_alt": 100.0,
-            "xy": [0.0, 0.0],
-            "psi_mr": 0.0,
-            "psi_tr": 0.0
-        }
-
-        self.set_max_time(max_time)
-        self.set_target(task_target)
-        self.set_trim_cond(trim_cond)
-
-    def _calculate_reward(self):
-        vel = np.sqrt((self.heli_dyn.state["uvw"] * self.heli_dyn.state["uvw"]).sum())
-        vel_norm =  vel / self.normalizers["v"]
-        veldot_norm = (self.heli_dyn.state["uvw"] * self.heli_dyn.state_dots["uvw"]).sum() / vel / self.normalizers["a"]
-        dwn_norm = self.heli_dyn.state["xyz"][2] / self.normalizers["x"]
-        dwndot_norm = self.heli_dyn.state_dots["xyz"][2] / self.normalizers["v"]
-        pqr_norm = self.heli_dyn.state["pqr"] * self.normalizers["t"] 
-        pqrdot_norm = self.heli_dyn.state_dots["pqr"] * self.normalizers["t"]**2
-
-        vel_target_norm = np.array(self.task_target["vel"], dtype=np.float32) / self.normalizers["v"]
-        dwn_target_norm = np.array(-self.task_target["sea_alt"], dtype=np.float32) / self.normalizers["x"]
-
-        pqr_final_reward = - (pqr_norm * pqr_norm).sum()
-        pqr_terminal_reward = - (np.sign(pqr_norm) * pqrdot_norm).sum()
-        pqr_reward = max(
-            pqr_final_reward,
-            pqr_terminal_reward)
-
-        vel_final_reward = - ((vel_norm - vel_target_norm) * (vel_norm - vel_target_norm)).sum()
-        vel_terminal_reward = - (np.sign(vel_norm - vel_target_norm) * veldot_norm).sum()
-
-        vel_reward = max(
-            vel_final_reward,
-            vel_terminal_reward)
-
-        dwn_final_reward = - ((dwn_norm - dwn_target_norm) * (dwn_norm - dwn_target_norm)).sum()
-        dwn_terminal_reward = - (np.sign(dwn_norm - dwn_target_norm) * dwndot_norm).sum()
-
-        dwn_reward = max(
-            dwn_final_reward,
-            dwn_terminal_reward)
-
-
-        reward = ( pqr_reward + vel_reward + dwn_reward ) / 3.0
-
-        success_step = pqr_final_reward > -1.0 and vel_final_reward > -1.0 and dwn_final_reward > -1.0 
-
-        return reward, success_step
+    def __init__(self, heli_name="aw109", render_mode="human", wind_enabled=True,
+                 target_altitude=2000, target_forward_speed=100., **kwargs):
+        kwargs.setdefault("target", dict(sea_alt=target_altitude, forward_speed=target_forward_speed))
+        super().__init__(heli_name=heli_name, render_mode=render_mode, wind_enabled=wind_enabled, **kwargs)

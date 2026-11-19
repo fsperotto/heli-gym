@@ -60,10 +60,12 @@ class Heli(gym.Env, EzPickle):
 
     # default task target
     default_task_target = {}
-    task_target_keys = ("north_loc", "east_loc", "sea_alt", "vel", "heading")
+    task_target_keys = ("north_loc", "east_loc", "sea_alt", "forward_speed", "heading",
+                        "vertical_velocity", "lateral_velocity", "yaw_rotation_velocity")
     task_observation_names = ("TARGET_NORTH_DIFF", "TARGET_EAST_DIFF",
-                              "TARGET_ALTITUDE_DIFF", "TARGET_SPEED_DIFF",
-                              "TARGET_HEADING_DIFF")
+                              "TARGET_ALTITUDE_DIFF", "TARGET_FORWARD_SPEED_DIFF",
+                              "TARGET_HEADING_DIFF", "TARGET_VERTICAL_VELOCITY_DIFF",
+                              "TARGET_LATERAL_VELOCITY_DIFF", "TARGET_YAW_ROTATION_VELOCITY_DIFF")
     n_task_obs = len(task_observation_names)
 
 
@@ -81,12 +83,12 @@ class Heli(gym.Env, EzPickle):
                  troposphere_height=DEFAULT_WEATHER["troposphere_height"],
                  sea_level_air_density=DEFAULT_WEATHER["sea_level_air_density"],
                  gravity=DEFAULT_WEATHER["gravity"],
-                 flip_angle=-30.0,
+                 flip_angle=None,
                  need_normalized_state=False):
 
-        if not np.isfinite(flip_angle) or not -90.0 <= flip_angle <= 90.0:
-            raise ValueError('flip_angle must be finite and between -90 and 90 degrees')
-        self.flip_angle = float(flip_angle)
+        if flip_angle is not None and (not np.isfinite(flip_angle) or not 0 <= flip_angle <= 180):
+            raise ValueError('flip_angle must be finite and between 0 and 180 degrees')
+        self.flip_angle = None if flip_angle is None else float(flip_angle)
 
         #if true, calculate normalized state at each step (often necessary for calculating rewards)
         self.need_normalized_state = need_normalized_state
@@ -209,13 +211,15 @@ class Heli(gym.Env, EzPickle):
         self.task_duration = self.max_time/4 # [sec] Allowed time for successing task
 
     def set_target(self, target=()):
-        """Set targets by name or as a five-item tuple in observation order."""
+        """Set targets by name or as a tuple in observation order."""
         if isinstance(target, tuple) and target:
-            if len(target) != len(self.task_target_keys):
-                raise ValueError("Expected five targets: north, east, altitude, speed, heading")
+            if len(target) not in (5, len(self.task_target_keys)):
+                raise ValueError("Expected targets in task_target_keys order")
             target = dict(zip(self.task_target_keys, target))
         task_target = copy.deepcopy(self.default_task_target)
         task_target.update(target)
+        if "vel" in task_target:
+            task_target.setdefault("forward_speed", task_target.pop("vel"))
         self.task_target = task_target
 
     def get_target(self):
@@ -348,7 +352,7 @@ class Heli(gym.Env, EzPickle):
             wind_direction=np.rad2deg(self.wind_dyn.wind_dir),
             turbulence_level=self.wind_dyn.turbulence_level,
             wind_ned=self.heli_dyn.WIND_NED,
-            target=self._task_observation(self.heli_dyn.observation),
+            target=self._task_observation(),
             target_position=self._render_target_position(),
             pilot_mode=self.pilot_mode,
         )
@@ -419,15 +423,21 @@ class Heli(gym.Env, EzPickle):
         self.current_reward = float(reward)
         return self._agent_observation(observation), self.current_reward, bool(terminated), bool(truncated), info
 
-    def _task_observation(self, dynamics_observation):
+    def _task_observation(self):
         """Return current minus target, with zero for unspecified targets.
 
         Positions are local north/east feet and positive-up sea altitude.
-        Speed is ground-relative in ft/s. Heading is yaw in radians.
+        Body velocities are forward, right and down in ft/s. Rates use radians.
         """
-        current = (*dynamics_observation[13:16],
-                   np.linalg.norm(dynamics_observation[4:7]),
-                   dynamics_observation[9])
+        return self._target_differences(self._target_values(self.heli_dyn.state))
+
+    @staticmethod
+    def _target_values(state):
+        north, east, down = state["xyz"]
+        u, v, w = state["uvw"]
+        return np.array([north, east, -down, u, state["euler"][2], w, v, state["pqr"][2]])
+
+    def _target_differences(self, current):
         differences = np.zeros(self.n_task_obs, dtype=np.float32)
         for i, (key, value) in enumerate(zip(self.task_target_keys, current)):
             target = self.task_target.get(key)
@@ -453,7 +463,7 @@ class Heli(gym.Env, EzPickle):
     def _agent_observation(self, dynamics_observation):
         """Combine physics measurements, target differences, and previous controls."""
         return np.concatenate((dynamics_observation,
-                               self._task_observation(dynamics_observation),
+                               self._task_observation(),
                                self.previous_action)).astype(np.float32, copy=False)
 
     def reset(self, *, seed=None, options=None):
@@ -495,12 +505,16 @@ class Heli(gym.Env, EzPickle):
         return bool(touching_ground and (fast_descent or excessive_tilt))
 
     def _is_flipped(self):
-        # Vertical projection of the body up axis on earth up. Using the
-        # projection handles equivalent Euler attitudes and ignores heading.
-        roll, pitch = self.heli_dyn.state['euler'][:2]
-        up_vertical = np.cos(float(roll)) * np.cos(float(pitch))
-        # sin(elevation above the horizon) is the up vector's vertical component.
-        return bool(up_vertical < np.sin(self.flip_angle * D2R) - EPS)
+        roll, pitch = map(float, self.heli_dyn.state['euler'][:2])
+        tolerance = np.finfo(np.float32).eps
+        if self.flip_angle is None:
+            limits = self.heli_dyn.HELI['OP']
+            return (abs(roll) > limits['MAX_ROLL'] * D2R + tolerance
+                    or abs(pitch) > limits['MAX_PITCH'] * D2R + tolerance)
+        # Earth-frame vertical and horizontal components of the body up axis.
+        vertical = np.cos(roll) * np.cos(pitch)
+        horizontal = np.hypot(np.sin(roll), np.cos(roll) * np.sin(pitch))
+        return bool(np.arctan2(horizontal, vertical) > self.flip_angle * D2R + tolerance)
 
     def _is_outside_limits(self):
         outside_limits = np.abs(self.heli_dyn.state['xyz'][0]) > self.heli_dyn.north_south_extent / 2 or np.abs(self.heli_dyn.state['xyz'][1]) > self.heli_dyn.east_west_extent / 2 \
@@ -536,10 +550,12 @@ class Heli(gym.Env, EzPickle):
         self.xyz_norm = self.heli_dyn.state["xyz"] / self.normalizers["x"]
         self.xyzdot_norm = self.heli_dyn.state_dots["xyz"] / self.normalizers["v"]
         self.uvw_norm = self.heli_dyn.state["uvw"] / self.normalizers["v"]
-        self.uvwdot_norm = self.heli_dyn.state_dots["uvw"] / self.normalizers["g"]
+        self.uvwdot_norm = self.heli_dyn.state_dots["uvw"] / self.normalizers["a"]
         self.pqr_norm = self.heli_dyn.state["pqr"] * self.normalizers["t"] 
         self.pqrdot_norm = self.heli_dyn.state_dots["pqr"] * self.normalizers["t"]**2
-        self.xyz_target_norm = np.array([self.task_target["north_loc"], self.task_target["east_loc"], -self.task_target["sea_alt"]], dtype=np.float32) / self.normalizers["x"]
+        position = self._render_target_position()
+        self.xyz_target_norm = (None if position is None else
+                                position * [1, 1, -1] / self.normalizers["x"])
 
 
     def _calculate_reward(self):

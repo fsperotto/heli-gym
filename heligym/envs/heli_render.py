@@ -38,8 +38,11 @@ class HeliRender:
             "NORTH      : %8.2f ft",
             "EAST       : %8.2f ft",
             "ALTITUDE   : %8.2f ft",
-            "SPEED      : %8.2f ft/s",
+            "FORWARD    : %8.2f ft/s",
             "HEADING    : %8.2f deg",
+            "VERTICAL   : %8.2f ft/s",
+            "LATERAL    : %8.2f ft/s",
+            "YAW RATE   : %8.2f rad/s",
         ]
         self.info_text = [
             "POWER      : %5.2f hp",

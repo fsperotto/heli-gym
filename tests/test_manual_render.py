@@ -58,7 +58,7 @@ class ManualRenderTests(unittest.TestCase):
                 patch.object(main, 'load_model') as load, \
                 patch.object(main, 'run_episode', return_value=dict(steps=0, reward=0)) as run, \
                 contextlib.redirect_stdout(io.StringIO()):
-            main.main(['--manual', '--task', 'goto', '--target-dir', directory])
+            main.main(['render', '--manual', '--task', 'goto', '--target-dir', directory])
         load.assert_not_called()
         self.assertIsNone(run.call_args.args[0])
         self.assertEqual(run.call_args.args[1].commands, ['render'])

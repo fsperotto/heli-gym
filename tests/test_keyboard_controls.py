@@ -38,7 +38,7 @@ class KeyboardControlsTests(unittest.TestCase):
         self.env.wind_dyn = SimpleNamespace(wind_speed=12, wind_dir=np.pi / 2,
                                             turbulence_level=3)
         self.env.heli_dyn = SimpleNamespace(
-            action=np.zeros(4), observation=np.zeros(17), state={}, n_act=4,
+            action=np.zeros(4), observation=np.zeros(17), state={key: np.zeros(3) for key in ("uvw", "xyz", "pqr", "euler")}, n_act=4,
             WIND_NED=np.array([1, 12, 0], dtype=np.float32)
         )
         self.env.task_target = {}

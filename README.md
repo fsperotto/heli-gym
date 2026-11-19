@@ -18,29 +18,29 @@ working display forwarding.
 ## Training and saved runs
 
 Install the optional training dependencies with `pip install -e '.[train]'`.
-`main.py` accepts the positional commands `train`, `eval`, `plot`, and `render`.
-With no commands it runs all four in that order; otherwise it runs only the
-selected stages, in the same pipeline order.
+`main.py` accepts the positional commands `tune`, `train`, `eval`, `plot`, and `render`.
+With no command it prints help. Selected commands run in pipeline order.
 
 ```bash
-python main.py --target-dir runs/hover                 # entire pipeline
+python main.py train eval plot render --target-dir runs/hover  # entire pipeline
 python main.py train eval --target-dir runs/hover      # headless training and evaluation
 python main.py eval plot --target-dir runs/hover       # evaluate a saved policy and plot statistics
 python main.py plot --target-dir runs/hover            # plot saved statistics only
 python main.py render --target-dir runs/hover          # one episode in the GUI
 ```
 
-Each environment observation contains 26 values, in this order:
+Each environment observation contains 29 values, in this order:
 
 - 17 measurements produced by the helicopter dynamics.
-- 5 target differences for local north position, east position, sea altitude
-  (feet, positive up), scalar ground-relative speed (ft/s), and heading (radians).
+- 8 target differences for local north position, east position, sea altitude
+  (feet, positive up), body-forward speed, heading, body-down velocity, body-right velocity, and body yaw rate.
 - 4 previous applied control commands.
 
 Target differences are current measurement minus target. The heading difference
 is wrapped to `[-π, π)`. Each unspecified or `None` target contributes zero.
 Pass a mapping to `set_target` with keys `north_loc`, `east_loc`, `sea_alt`,
-`vel`, and `heading`, or pass a five-item tuple in that order. Hover and
+`forward_speed`, `heading`, `vertical_velocity`, `lateral_velocity`, and
+`yaw_rotation_velocity`, or pass an eight-item tuple in that order. Hover and
 forward-flight use their respective configured targets. Policies and
 normalization statistics from earlier observation layouts need retraining.
 
@@ -48,20 +48,22 @@ Across all tasks, a crash or flip terminates the episode with a fixed **−100**
 reward, replacing that step's task reward. `info['crash']` and `info['flip']`
 identify these failures, and `info['failed']` is true. Failure takes precedence
 over success and goto arrival bonuses; no new waypoint is drawn on failure.
-A crash requires ground contact combined with excessive downward speed or an
-absolute roll/pitch angle above 60° (both signs are checked). A flip occurs even
-in the air when the elevation of the helicopter's up vector above the horizon
-falls below `flip_angle` (default **−30°**). Detection compares
-`cos(roll) * cos(pitch)` against `sin(flip_angle)` with a small numerical tolerance.
-For pure roll or pitch, the default corresponds to tilting more than 120° away
-from upright. Use `--flip-angle -30` in the CLI, or `flip_angle=-30.0` when
-constructing an environment; valid values are −90° to +90°. Setting it to 0
-restores the previous horizon-crossing threshold. Saved runs retain this setting
-for evaluation/rendering, unless explicitly overridden. Gentle upright
+A crash requires ground contact combined with excessive downward speed or
+absolute roll or pitch above 60°. The airborne attitude check defaults to the
+helicopter's configured `MAX_ROLL` and `MAX_PITCH`, applied to the absolute
+roll and pitch independently. AW109 limits are 60° roll and 25° pitch.
+
+Use `--flip-angle 120` in the CLI or `flip_angle=120.0` in the environment
+constructor to override both limits with a single tilt threshold. Tilt is
+measured from earth up to the helicopter's up axis. Upright is 0°, horizontal
+is 90°, and inverted is 180°. Failure occurs when tilt exceeds the threshold.
+Saved runs retain their setting for evaluation and rendering. Old saved angles
+measured from the horizon are converted with `90 - old_angle`. Gentle upright
 ground contact alone is not a crash. Existing map/altitude limits and numerical
 failure handling remain active; the episode time limit remains a truncation.
 
-Use `--task goto` to pursue a continuing sequence of random position targets.
+Use `--task goto` to reach a random position target. Add `--continual` to
+pursue successive waypoints in the same episode.
 Its sampled waypoints leave speed and heading unspecified, so both differences
 are zero.
 Its reward is `progress_weight * (previous_distance - current_distance)` plus
@@ -71,8 +73,9 @@ and `arrival_reward=100`: closing 100 ft yields 10 progress points, while reachi
 the target yields 100 bonus points. Moving at constant distance yields zero
 progress reward; moving away yields a negative reward. There are no separate
 velocity, angular-motion, attitude, or action penalties. On arrival within a 10 ft 3D radius, the
-reward is calculated for the reached target, then the observation reports
-differences from the new target. Arrival does not end the episode. Targets are sampled within
+reward is calculated for the reached target. By default arrival ends the episode
+successfully. With `--continual`, the observation instead reports differences
+from a newly sampled waypoint and the episode continues. Targets are sampled within
 ±100 ft north/east and ±50 ft altitude of the current position; altitude is raised
 where necessary to maintain 50 ft clearance above terrain at the target.
 Targets remain within map boundaries and outside the arrival radius. The usual
@@ -99,18 +102,30 @@ Holding a nonzero command still incurs a magnitude cost. The change term compare
 against the preceding applied action (the reset controls on the first step).
 Each reset starts a new action history. Previous controls are included in the
 observation.
-When constructing these environments directly, `smoothness_weight` sets lambda
-(default 0.25; zero recovers the base task reward).
+Set lambda with `--smoothness-weight` in the CLI or `smoothness_weight` in
+the environment constructor. The default is 0.25, and zero recovers the base task reward.
 
-`stabilize` subtracts the mean square of the six normalized linear/angular
-velocities. It has no position, altitude, heading, roll/pitch, or ground-contact
-task reward term: it rewards stopping wherever the helicopter is, allowing tilt to
-compensate wind. Step success requires speed below 0.5 ft/s and angular speed
-below 0.01 rad/s, irrespective of attitude. Crash/flip failure rewards override this task reward as described above. Other
-simulation failure conditions still terminate episodes under the environment rules.
-`hover` retains its existing position and angular-rate objective. Its two reward
-components are averaged before subtracting the smoothness cost; those components
-are not bounded to magnitude 1. Smoothness costs impose no hard control-rate limit.
+```bash
+python main.py train --task smooth-hover --smoothness-weight 0.1 --target-dir runs/smooth-hover
+```
+
+Use `gym.make("ApproximateTargetValues-v0", target={"sea_alt": 2000, "forward_speed": 100})`
+to track selected targets. Velocities are signed ground-relative body components
+in ft/s, altitude is positive up, and yaw rotation velocity is body rate r in rad/s.
+Each active error is current minus target divided by its characteristic scale.
+Position uses rotor diameter D, speed uses sqrt(Dg), angular rate uses 1/T
+where T = sqrt(D/g), and heading uses radians. Unspecified targets contribute zero.
+
+For error e, the cost is abs(e) with `diff_impact="linear"` (default) or e² with
+`"quadratic"`. Rewards sum over target components. Mode `"difference"` gives
+negative cost, `"progression"` (default) gives previous minus current cost for
+the same target, and `"attitude"` gives the negative instantaneous cost derivative
+per normalized time, taking the linear gradient as zero at zero error.
+
+Stabilize sets u, v and w to zero. Hover captures the initial position on each
+reset and accepts an explicit target_altitude. Forward flight uses fixed-target
+Goto with altitude and forward speed. Goto without a constructor target retains
+its random waypoint and arrival bonus. Pass `continual=True` for successive waypoints.
 
 ```bash
 python main.py train --task smooth-stabilize --target-dir runs/smooth-stabilize
@@ -162,12 +177,11 @@ the window stays responsive while physics is paused. The GUI indicates the pilot
 mode. The episode ends at the configured time limit or a terminal condition.
 
 Use `--manual` to launch a selected task without any policy, saved normalization,
-or training dependencies. When no positional command is given, `--manual` selects
-`render` alone. It ignores saved run settings and uses the supplied environment
+or training dependencies. Use it with the `render` command. It ignores saved run settings and uses the supplied environment
 options and their defaults. **M** has no effect because no agent is loaded.
 
 ```bash
-python main.py render --manual --task goto --episode-seconds 1000
+python main.py render --manual --task goto --continual --episode-seconds 1000
 python main.py render --target-dir runs/goto   # agent initially; M toggles manual
 ```
 
@@ -303,12 +317,15 @@ The other physical arguments are `gas_constant`, `sea_level_temperature`,
 | 17  | north difference   | ft    | -∞    | ∞      |
 | 18  | east difference    | ft    | -∞    | ∞      |
 | 19  | altitude difference| ft    | -∞    | ∞      |
-| 20  | speed difference   | ft/s  | -∞    | ∞      |
+| 20  | forward speed difference   | ft/s  | -∞    | ∞      |
 | 21  | heading difference | rad   | -π    | π (exclusive) |
-| 22  | previous collective|       | -1    | 1      |
-| 23  | previous lon. cyclic|      | -1    | 1      |
-| 24  | previous lat. cyclic|      | -1    | 1      |
-| 25  | previous pedal     |       | -1    | 1      |
+| 22  | vertical velocity difference | ft/s | -∞ | ∞ |
+| 23  | lateral velocity difference | ft/s | -∞ | ∞ |
+| 24  | yaw rotation velocity difference | rad/s | -∞ | ∞ |
+| 25  | previous collective|       | -1    | 1      |
+| 26  | previous lon. cyclic|      | -1    | 1      |
+| 27  | previous lat. cyclic|      | -1    | 1      |
+| 28  | previous pedal     |       | -1    | 1      |
 
 At reset, the previous controls are the trim controls used to create the
 initial steady-flight state. After each step, they are the direct controls
@@ -470,3 +487,46 @@ To do list for Reinforcement Learning tasks.
 - [ ] Add **turning flight** task
 - [ ] Add **ground** task
 - [ ] Add **slalom maneuver** task
+
+### Tune PPO with Optuna
+
+Install Optuna in the environment you use for HeliGym, then run a study for one task.
+
+```bash
+python -m pip install optuna
+python main.py tune --task smooth-hover --target-dir runs/smooth-hover \
+  --wind --random-wind --wind-speed 20 --turbulence-level 3
+```
+
+Wind is enabled by default. Use `--no-wind` for calm conditions. With
+`--random-wind`, the tuner samples a direction and a speed between zero and
+`--wind-speed` (default upper bound 20 ft/s). Training uses one sample per
+training seed, and evaluation uses a fresh sample per episode. All candidates
+in a phase share the same scenarios. The selected turbulence level is fixed.
+
+The tuner ranks search trials by mean evaluation return, then retrains the top
+three settings and the default PPO settings from scratch on three fresh seeds
+with a larger budget. Refinement uses the same held-out evaluation seeds for
+each policy. See `--help` to adjust the trial count, budgets, and seed counts.
+PPO can round a requested budget up to its next full rollout.
+
+The study lives in `<target-dir>/optuna`. An existing study prints its saved
+`summary.json` before resuming. Use the
+same settings and `--target-dir` to add trials, or pass `--n-trials 0` to
+continue refinement without adding trials. Completed refinement runs are
+reused. Use `python main.py tune --summary-only --target-dir <dir>` to read the saved results.
+
+After refinement, `<target-dir>/optuna/final_params.json` contains the winning
+PPO settings and the study's environment options. Use `--use-tuned` to start
+fresh training in the same run directory.
+
+```bash
+python main.py tune --task stabilize --no-wind --target-dir runs/stabilize
+python main.py train eval --target-dir runs/stabilize --use-tuned \
+  --seed 123 --total-timesteps 1966080
+```
+
+To use a different study directory, pass `--tune-dir runs/stabilize/optuna`.
+To load a specific JSON file, use `--file-args`. Explicit CLI options take
+precedence over the exported settings. Training writes the effective
+parameters to `<target-dir>/arguments.json`.

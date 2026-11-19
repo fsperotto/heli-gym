@@ -38,14 +38,14 @@ class SmoothTaskTests(unittest.TestCase):
                 finally:
                     env.close()
 
-    def test_stabilize_only_penalizes_mean_squared_velocities(self):
-        env = heligym.HeliStabilize(render_mode=None, wind_enabled=False)
+    def test_stabilize_penalizes_only_body_velocities(self):
+        env = heligym.HeliStabilize(render_mode=None, wind_enabled=False, mode="difference")
         try:
             env.reset(seed=42)
             env.heli_dyn.state['uvw'][:] = np.array([1., 2., 3.]) * env.normalizers['v']
             env.heli_dyn.state['pqr'][:] = np.array([4., 5., 6.]) / env.normalizers['t']
             reward, success = env._calculate_reward()
-            self.assertAlmostEqual(reward, -91. / 6., places=5)
+            self.assertAlmostEqual(reward, -6., places=5)
             self.assertFalse(success)
             # Stationary flight succeeds even with tilt, at another position,
             # and at ground level; none of those add a reward penalty.

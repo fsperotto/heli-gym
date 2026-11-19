@@ -85,10 +85,10 @@ class HeliRenderTests(unittest.TestCase):
     def test_target_marker_uses_north_east_down_coordinates(self):
         self.native.create_model.side_effect = None
         self.native.create_model.return_value = 'target'
-        target = np.array([100., 200., 300., 0., np.pi / 2])
+        target = np.array([100., 200., 300., 0., np.pi / 2, 1., 2., 3.])
         self.renderer.render(self.state, self.observation, self.action,
                              target=target, target_position=target[:3])
-        np.testing.assert_allclose(self.renderer.target_values, [100., 200., 300., 0., 90.])
+        np.testing.assert_allclose(self.renderer.target_values, [100., 200., 300., 0., 90., 1., 2., 3.])
         self.native.translate_model.assert_any_call(
             'target', 100. * FT2MTR, 200. * FT2MTR, -300. * FT2MTR)
         self.native.add_instantanous_object_to_window.assert_called_once_with('target')

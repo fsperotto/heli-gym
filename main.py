@@ -1,14 +1,15 @@
 """Train, evaluate, plot statistics, or render a helicopter controller.
 
-Commands run in pipeline order: train -> eval -> plot -> render.
-Omit commands to run the entire pipeline. Select one or more to run only those
-stages. eval runs deterministic episodes without a GUI; render shows one episode.
+Commands run in pipeline order: tune -> train -> eval -> plot -> render.
+With no command, display help. Select one or more commands to run those stages. eval runs deterministic episodes without a GUI; render shows one episode.
 Standalone eval/render load the model and saved run settings from --target-dir;
 explicit command-line settings override saved settings.
 
 Examples:
-    python main.py --task hover
-    python main.py --task forward-flight --algorithm sac --net-arch 256 256
+    python main.py tune --task hover --target-dir runs/hover
+    python main.py train eval --target-dir runs/hover --use-tuned
+    python main.py train eval plot render --task hover
+    python main.py train --task forward-flight --algorithm sac --net-arch 256 256
     python main.py train eval --target-dir runs/hover --task hover
     python main.py train --total-timesteps 128 --n-envs 1 --n-steps 128 --batch-size 64
     python main.py eval plot --target-dir runs/hover
@@ -42,12 +43,15 @@ from functools import partial
 import json
 import math
 import os
+import random
+import shlex
 import sys
 from pathlib import Path
 import time
+from zoneinfo import ZoneInfo
 
 
-COMMANDS = ('train', 'eval', 'plot', 'render')
+COMMANDS = ('tune', 'train', 'eval', 'plot', 'render')
 
 
 def log_status(message, end='\n'):
@@ -110,14 +114,62 @@ def nonnegative_int(value):
     return result
 
 
-def parse_args(argv=None):
+def load_file_args(parser, path):
+    """Read JSON defaults keyed by argparse destination names."""
+    try:
+        values = json.loads(path.read_text())
+    except (OSError, ValueError) as error:
+        parser.error(f'--file-args {path}: {error}')
+    if not isinstance(values, dict):
+        parser.error('--file-args must contain a JSON object')
+
+    options = {action.dest: action for action in parser._actions if action.option_strings}
+    defaults = {}
+    for key, value in values.items():
+        if key not in options or key in ('file_args', 'tune_dir', 'use_tuned', 'help'):
+            parser.error(f'--file-args: unknown parameter {key!r}')
+        action = options[key]
+        if value is None and action.default is None:
+            defaults[key] = None
+            continue
+        try:
+            if isinstance(action.default, bool):
+                if not isinstance(value, bool):
+                    raise ValueError('expected a JSON boolean')
+            elif action.type is json.loads:
+                if not isinstance(value, dict):
+                    raise ValueError('expected a JSON object')
+            elif action.nargs == '+':
+                if not isinstance(value, list) or not value:
+                    raise ValueError('expected a nonempty JSON array')
+                value = [action.type(str(item)) for item in value]
+            else:
+                if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+                    raise ValueError('expected a string or number')
+                value = (action.type or str)(str(value))
+            if action.choices is not None and value not in action.choices:
+                raise ValueError(f'expected one of {list(action.choices)}')
+        except (ValueError, argparse.ArgumentTypeError) as error:
+            parser.error(f'--file-args: invalid {key!r}: {error}')
+        defaults[key] = value
+    return defaults
+
+
+def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     """Expose common settings and algorithm-specific training controls."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('commands', nargs='*', metavar='COMMAND',
-                        help='train, eval, plot, render; selected stages run in that order (default: all four)')
+                        help='tune, train, eval, plot, render; selected stages run in that order')
+    parameter_source = parser.add_mutually_exclusive_group()
+    parameter_source.add_argument('--file-args', type=Path,
+                        help='JSON defaults such as final_params.json; explicit CLI options override them')
+    parameter_source.add_argument('--tune-dir', type=Path,
+                                  help='load final_params.json from this study directory')
+    parameter_source.add_argument('--use-tuned', action='store_true',
+                                  help='load final_params.json from <target-dir>/optuna')
     parser.add_argument('--manual', action='store_true',
-                        help='render with keyboard controls only, without loading a policy; defaults to render when no command is given')
+                        help='render with keyboard controls only, without loading a policy')
     environment = parser.add_argument_group('Environment')
     environment.add_argument('--heli-name', 
                         default='aw109',
@@ -127,8 +179,12 @@ def parse_args(argv=None):
                                  'stabilize', 'smooth-stabilize', 'goto', 'heli'],
                         default='hover', 
                         help='environment task; forward is an alias for forward-flight (default: hover); see task descriptions above')
-    environment.add_argument('--flip-angle', type=float, default=-30.0,
-                             help='flip failure threshold: elevation of body up vector above horizon in degrees, [-90, 90] (default: -30)')
+    environment.add_argument('--flip-angle', type=float, default=None,
+                             help='maximum tilt from upright in degrees [0, 180]; defaults to the helicopter roll and pitch limits')
+    environment.add_argument('--continual', action=argparse.BooleanOptionalAction, default=False,
+                             help='draw a new waypoint on arrival in Goto (default: end the episode)')
+    environment.add_argument('--smoothness-weight', type=float, default=0.25,
+                             help='nonnegative control penalty weight for smooth-hover and smooth-stabilize (default: 0.25)')
     environment.add_argument('--episode-seconds', 
                         type=float, 
                         default=40.0,
@@ -139,11 +195,13 @@ def parse_args(argv=None):
     wind.add_argument('--no-wind', dest='no_wind', action='store_true',
                       help='disable steady wind and turbulence during training, evaluation and rendering')
     parser.set_defaults(no_wind=False)
+    environment.add_argument('--random-wind', action=argparse.BooleanOptionalAction, default=False,
+                             help='sample a wind speed up to --wind-speed (default 20 ft/s) and a direction for each training or evaluation seed')
     environment.add_argument('--wind-speed', type=float, default=None,
                         help='steady wind speed in ft/s; uses the environment default if unspecified; retained for W reactivation when wind is disabled')
     environment.add_argument('--wind-direction', type=float, default=None,
                         help='wind vector direction in degrees clockwise from north (0 north, 90 east); uses the environment default if unspecified; retained for W reactivation when wind is disabled')
-    environment.add_argument('--turbulence-level', type=int, choices=range(1, 8), default=None,
+    environment.add_argument('--turbulence-level', '--turbulence_level', type=int, choices=range(1, 8), default=None,
                         help='turbulence intensity from 1 (lightest) to 7 (strongest); uses the environment default if unspecified; retained for W reactivation when wind is disabled')
     environment.add_argument('--no-online-normalization', 
                         action='store_true',
@@ -283,27 +341,61 @@ def parse_args(argv=None):
                         default={},
                         help='JSON object overriding algorithm constructor settings, including policy_kwargs; cannot override policy, env, seed, device, verbose or tensorboard_log')
 
+    tuning = parser.add_argument_group('Optuna tuning')
+    tuning.add_argument('--n-trials', type=nonnegative_int, default=20,
+                        help='additional search trials (default: 20)')
+    tuning.add_argument('--trial-timesteps', type=positive_int, default=245760)
+    tuning.add_argument('--refinement-timesteps', type=positive_int, default=983040)
+    tuning.add_argument('--finalists', type=positive_int, default=3)
+    tuning.add_argument('--refinement-seeds', type=positive_int, default=3,
+                        help='fresh training seeds per finalist and baseline')
+    tuning.add_argument('--summary-only', action='store_true',
+                        help='print the tuning summary and exit')
+
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_intermixed_args(argv)
     unknown_commands = set(args.commands) - set(COMMANDS)
     if unknown_commands:
         parser.error('unknown command(s): ' + ', '.join(sorted(unknown_commands))
                      + '; choose from ' + ', '.join(COMMANDS))
-    if args.manual and not args.commands:
-        args.commands = ['render']
-    commands = [command for command in COMMANDS
-                if not args.commands or command in args.commands]
+    if help_if_no_command and not args.commands:
+        parser.print_help()
+        return args
+    commands = [command for command in COMMANDS if command in args.commands]
+    if 'tune' in commands:
+        parser.set_defaults(task='smooth-hover', device='cpu', n_envs=4, target_dir=None)
+        args = parser.parse_intermixed_args(argv)
+    if args.target_dir is None:
+        parser.set_defaults(target_dir=Path('runs') / args.task)
+        args = parser.parse_intermixed_args(argv)
+    parameter_path = args.file_args
+    if 'tune' not in commands or after_tune:
+        if args.use_tuned or args.tune_dir is not None:
+            parameter_path = (args.tune_dir or args.target_dir / 'optuna') / 'final_params.json'
+    file_defaults = load_file_args(parser, parameter_path) if parameter_path else {}
+    if file_defaults:
+        parser.set_defaults(**file_defaults)
+        args = parser.parse_intermixed_args(argv)
     # Reuse the training configuration for independent evaluation/rendering.
     # Parsing again preserves explicit CLI overrides, including --algorithm.
     saved_settings = args.target_dir / 'arguments.json'
-    if 'train' not in commands and ('eval' in commands or ('render' in commands and not args.manual)) and saved_settings.is_file():
+    if 'tune' not in commands and 'train' not in commands and ('eval' in commands or ('render' in commands and not args.manual)) and saved_settings.is_file():
         config = json.loads(saved_settings.read_text())
-        run_fields = ('algorithm', 'task', 'heli_name', 'episode_seconds', 'flip_angle',
-                      'no_wind', 'wind_speed', 'wind_direction', 'turbulence_level',
+        if config.get('flip_angle') is not None and 'flip_angle_reference' not in config:
+            config['flip_angle'] = 90 - config['flip_angle']
+        run_fields = ('algorithm', 'task', 'heli_name', 'episode_seconds', 'flip_angle', 'smoothness_weight', 'continual',
+                      'no_wind', 'random_wind', 'wind_speed', 'wind_direction', 'turbulence_level',
                       'no_online_normalization', 'seed', 'n_envs')
-        parser.set_defaults(**{key: config[key] for key in run_fields if key in config})
+        parser.set_defaults(**{key: config[key] for key in run_fields if key in config and key not in file_defaults})
         args = parser.parse_intermixed_args(argv)
     args.commands = commands
+    if 'tune' in commands and not after_tune:
+        if args.algorithm != 'ppo':
+            parser.error('tune requires PPO')
+        if args.random_wind and args.no_wind:
+            parser.error('--random-wind requires wind to be enabled for tuning')
+        if not 0 <= args.seed < 2**31:
+            parser.error('tune requires --seed in [0, 2**31)')
     if not isinstance(args.algo_kwargs, dict):
         parser.error('--algo-kwargs must be a JSON object')
     if args.learning_rate <= 0 or args.episode_seconds <= 0 or not 0 <= args.gamma <= 1:
@@ -314,17 +406,34 @@ def parse_args(argv=None):
         parser.error('--wind-speed must be finite and nonnegative')
     if args.wind_direction is not None and not math.isfinite(args.wind_direction):
         parser.error('--wind-direction must be finite')
-    if not math.isfinite(args.flip_angle) or not -90.0 <= args.flip_angle <= 90.0:
-        parser.error('--flip-angle must be finite and between -90 and 90 degrees')
+    if args.flip_angle is not None and (not math.isfinite(args.flip_angle) or not 0 <= args.flip_angle <= 180):
+        parser.error('--flip-angle must be finite and between 0 and 180 degrees')
+    if not math.isfinite(args.smoothness_weight) or args.smoothness_weight < 0:
+        parser.error('--smoothness-weight must be finite and nonnegative')
     # These are supplied by the runner, rather than algorithm hyperparameters.
     reserved = {'policy', 'env', 'seed', 'device', 'verbose', 'tensorboard_log'}
     if reserved.intersection(args.algo_kwargs):
         parser.error('--algo-kwargs cannot override ' + ', '.join(sorted(reserved)))
+    args.command_line = shlex.join([sys.executable, "main.py", *argv])
     return args
 
 
+def sample_wind(seed, speed_limit=None):
+    """Sample a steady wind speed and direction from a reproducible seed."""
+    rng = random.Random(seed)
+    return rng.uniform(0, 20.0 if speed_limit is None else speed_limit), rng.uniform(0, 360)
+
+
+def run_wind(args, seed):
+    if args.no_wind or not args.random_wind:
+        return args.wind_speed, args.wind_direction
+    speed, direction = sample_wind(seed, args.wind_speed)
+    return speed, direction if args.wind_direction is None else args.wind_direction
+
+
 def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
-             wind_speed=None, wind_direction=None, turbulence_level=None, monitor=True, flip_angle=-30.0):
+             wind_speed=None, wind_direction=None, turbulence_level=None, monitor=True, flip_angle=None,
+             smoothness_weight=0.25, continual=False):
     """Construct each worker locally so no native objects cross process boundaries."""
     import heligym
     classes = {'hover': heligym.HeliHover, 'forward': heligym.HeliForwardFlight,
@@ -336,8 +445,13 @@ def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
     weather = {key: value for key, value in dict(
         wind_speed=wind_speed, wind_direction=wind_direction,
         turbulence_level=turbulence_level).items() if value is not None}
+    task_kwargs = {}
+    if task in ('smooth-hover', 'smooth-stabilize'):
+        task_kwargs['smoothness_weight'] = smoothness_weight
+    if task == 'goto':
+        task_kwargs['continual'] = continual
     env = classes[task](heli_name=heli_name, render_mode=render_mode,
-                        wind_enabled=not no_wind, flip_angle=flip_angle, **weather)
+                        wind_enabled=not no_wind, flip_angle=flip_angle, **weather, **task_kwargs)
     env.set_max_time(episode_seconds)
     if monitor:
         from stable_baselines3.common.monitor import Monitor
@@ -414,10 +528,12 @@ def run_episode(model, args, normalization_path, seed, render=False):
     label = 'Creating GUI environment and loading graphics' if render else f'Creating evaluation environment (seed {seed})'
     with progress(label, multiline=render):
         from heligym.envs.helicopter import DT
+        wind_speed, wind_direction = run_wind(args, seed)
         factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
                           render_mode='human' if render else None, no_wind=args.no_wind,
-                          wind_speed=args.wind_speed, wind_direction=args.wind_direction,
-                          turbulence_level=args.turbulence_level, flip_angle=args.flip_angle)
+                          wind_speed=wind_speed, wind_direction=wind_direction,
+                          turbulence_level=args.turbulence_level, flip_angle=args.flip_angle,
+                          smoothness_weight=args.smoothness_weight, continual=args.continual)
         if model is None:
             env = factory(monitor=False)
             raw_env = env
@@ -579,7 +695,7 @@ def train(algorithm, args):
                 if normalization is not None:
                     normalization.save(str(checkpoint_dir / 'vecnormalize.pkl'))
                 # Each checkpoint can be evaluated/rendered using --target-dir.
-                write_json(checkpoint_dir / 'arguments.json', config)
+                write_json(checkpoint_dir / 'arguments.json', {**config, 'saved_at': saved_at()})
                 # Episode history is cumulative; preserve only the latest copy.
                 write_json(args.target_dir / 'learning_curves.json', self.episodes)
                 print(f'Checkpoint saved at {self.num_timesteps} transitions: {checkpoint_dir}')
@@ -600,14 +716,21 @@ def train(algorithm, args):
                     self.saved_checkpoints += 1
             return True
 
+    def saved_at():
+        return datetime.now(ZoneInfo('Europe/Paris')).isoformat(timespec='seconds')
+
     settings = agent_settings(args)
     args.target_dir.mkdir(parents=True, exist_ok=True)
     config = {key: str(value) if isinstance(value, Path) else value
               for key, value in vars(args).items()}
+    config['flip_angle_reference'] = 'upright'
+    config['saved_at'] = saved_at()
     write_json(args.target_dir / 'arguments.json', config)
+    wind_speed, wind_direction = run_wind(args, args.seed)
     factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
-                      no_wind=args.no_wind, wind_speed=args.wind_speed,
-                      wind_direction=args.wind_direction, turbulence_level=args.turbulence_level, flip_angle=args.flip_angle)
+                      no_wind=args.no_wind, wind_speed=wind_speed,
+                      wind_direction=wind_direction, turbulence_level=args.turbulence_level, flip_angle=args.flip_angle,
+                      smoothness_weight=args.smoothness_weight, continual=args.continual)
     backend = 'subprocess' if args.n_envs > 1 and args.vec_env == 'subproc' else 'sequential'
     with progress(f'Creating {args.n_envs} training environments ({backend})'):
         if args.n_envs > 1 and args.vec_env == 'subproc':
@@ -637,6 +760,8 @@ def train(algorithm, args):
                 (args.target_dir / name).unlink(missing_ok=True)
             if args.no_online_normalization:
                 (args.target_dir / 'vecnormalize.pkl').unlink(missing_ok=True)
+            config['saved_at'] = saved_at()
+            write_json(args.target_dir / 'arguments.json', config)
             print(f'Training artifacts saved to {args.target_dir.resolve()}')
         return model
     finally:
@@ -659,13 +784,27 @@ def load_model(algorithm, args):
 
 def main(argv=None):
     """Execute selected commands in pipeline order, sharing a model when possible."""
+    original_command = sys.orig_argv if argv is None else None
     argv = list(sys.argv[1:] if argv is None else argv)
     if '-h' in argv or '--help' in argv:
         parse_args(argv)  # Keep --help fast and free of startup messages.
         return
-    with progress('Reading arguments and saved run settings'):
-        args = parse_args(argv)
+    args = parse_args(argv, help_if_no_command=True)
+    if not args.commands:
+        return
+    if original_command:
+        args.command_line = shlex.join(original_command)
     log_status('Selected commands: ' + ' -> '.join(args.commands))
+    if 'tune' in args.commands:
+        from ppo_tuning import tune
+        tune(args)
+        if args.summary_only or args.commands == ['tune']:
+            return
+        if args.use_tuned or args.tune_dir is not None:
+            args = parse_args(argv, after_tune=True)
+            if original_command:
+                args.command_line = shlex.join(original_command)
+        args.commands.remove('tune')
     # Configure native paths before importing any heavy packages. The bootstrap
     # may restart Python once; headless commands do not need it.
     if 'render' in args.commands:
