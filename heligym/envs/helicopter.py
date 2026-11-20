@@ -561,11 +561,11 @@ class Heli(gym.Env, EzPickle):
             | pqr	   | state["pqr"] | Angular velocity about the body's forward (roll), right (pitch), and down (yaw) axes | rad/s |
             | pqrdot   | state_dots["pqr"]	Angular acceleration about those same body axes | rad/s² |        
 
-            The environment uses the main rotor diameter \(D = 2R\) and gravitational acceleration \(g\) to define:
-              - a length scale \(D\), 
-              - a time scale \(T = \sqrt{D/g}\), 
-              - a speed scale \(V = \sqrt{Dg}\), and 
-              - an acceleration scale \(g\).
+            The environment uses the main rotor diameter $D = 2R$ and gravitational acceleration $g$ to define:
+              - a length scale $D$, 
+              - a time scale $T = \\sqrt{D/g}$, 
+              - a speed scale $V = \\sqrt{Dg}$, and 
+              - an acceleration scale $g$.
         """
 
         self.xyz_norm = self.heli_dyn.state["xyz"] / self.normalizers["x"]
