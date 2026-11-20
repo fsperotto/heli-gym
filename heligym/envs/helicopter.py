@@ -21,6 +21,12 @@ EPS         = 1e-10 # small value for divison by zero
 R2D         = 180/math.pi # Rad to deg
 D2R         = 1/R2D
 TAU         = 2*math.pi
+
+_RECENT_YAW_SECONDS = 10.0
+_RECENT_YAW_ALPHA = math.exp(-DT / _RECENT_YAW_SECONDS)
+# With a zero initial value, one uniform revolution over 10 s reads one.
+_RECENT_YAW_BETA = (TAU / _RECENT_YAW_SECONDS) * (1 - math.exp(-1))
+
 FLOAT_TYPE  = np.float32
 
 CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
@@ -76,7 +82,7 @@ class Heli(gym.Env, EzPickle):
         "downward_velocity_ft_s", "roll_rad", "pitch_rad", "yaw_rad",
         "body_roll_rate_rad_s", "body_pitch_rate_rad_s", "body_yaw_rate_rad_s",
         "north_position_ft", "east_position_ft", "sea_altitude_ft", "ground_clearance_ft",
-    ) + task_observation_names + tuple(f"previous_{name}" for name in action_names)
+    ) + task_observation_names + ("recent_yaw_turns",) + tuple(f"previous_{name}" for name in action_names)
 
     def __init__(self,
                  heli_name:str = "aw109",
@@ -169,10 +175,11 @@ class Heli(gym.Env, EzPickle):
         self.heli_dyn.set_wind(self.wind_dyn.wind_mean_ned) # set mean wind as wind so that helicopter trims accordingly
         self.action_space = spaces.Box(-1, +1, (self.heli_dyn.n_act,), dtype=np.float32)
         self.previous_action = np.zeros(self.heli_dyn.n_act, dtype=np.float32)
+        self.recent_yaw_turns = 0.0
         self.observation_space = spaces.Box(
-            low=np.concatenate((np.full(self.heli_dyn.n_obs + self.n_task_obs, -np.inf, dtype=np.float32),
+            low=np.concatenate((np.full(self.heli_dyn.n_obs + self.n_task_obs + 1, -np.inf, dtype=np.float32),
                                 self.action_space.low)),
-            high=np.concatenate((np.full(self.heli_dyn.n_obs + self.n_task_obs, np.inf, dtype=np.float32),
+            high=np.concatenate((np.full(self.heli_dyn.n_obs + self.n_task_obs + 1, np.inf, dtype=np.float32),
                                  self.action_space.high)),
             dtype=np.float32,
         )
@@ -425,6 +432,9 @@ class Heli(gym.Env, EzPickle):
             self.previous_action = actions.copy()
             self.current_reward = self.FAILURE_REWARD
             return self._agent_observation(previous_obs), self.current_reward, True, False, info
+        yaw_rate = float(self.heli_dyn.state['pqr'][2])
+        self.recent_yaw_turns = (_RECENT_YAW_ALPHA * self.recent_yaw_turns
+                                 + (1 - _RECENT_YAW_ALPHA) * yaw_rate / _RECENT_YAW_BETA)
         terminated = info['failed'] or info['successed']
         truncated = info['time_up']
         self.successed_time += DT if successed_step else 0
@@ -470,9 +480,10 @@ class Heli(gym.Env, EzPickle):
         """Update task state after rewarding a successful physics step."""
 
     def _agent_observation(self, dynamics_observation):
-        """Combine physics measurements, target differences, and previous controls."""
+        """Combine physics measurements, target differences, yaw history, and controls."""
         return np.concatenate((dynamics_observation,
                                self._task_observation(),
+                               [self.recent_yaw_turns],
                                self.previous_action)).astype(np.float32, copy=False)
 
     def reset(self, *, seed=None, options=None):
@@ -485,6 +496,7 @@ class Heli(gym.Env, EzPickle):
         self.step_count = 0
         self.current_reward = 0.0
         self.successed_time = 0
+        self.recent_yaw_turns = 0.0
         self.wind_dyn.reset()
         # Trim in the same mean wind as on construction, never in the previous
         # episode's instantaneous turbulence (which may have diverged).

@@ -42,6 +42,7 @@ class KeyboardControlsTests(unittest.TestCase):
             WIND_NED=np.array([1, 12, 0], dtype=np.float32)
         )
         self.env.task_target = {}
+        self.env.recent_yaw_turns = 0.0
         self.env.previous_action = np.zeros(4, dtype=np.float32)
         self.env.renderer = Mock()
 

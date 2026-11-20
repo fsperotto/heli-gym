@@ -38,14 +38,14 @@ class SmoothTaskTests(unittest.TestCase):
                 finally:
                     env.close()
 
-    def test_stabilize_penalizes_only_body_velocities(self):
+    def test_stabilize_penalizes_body_velocities_and_yaw_rate(self):
         env = heligym.HeliStabilize(render_mode=None, wind_enabled=False, mode="difference")
         try:
             env.reset(seed=42)
             env.heli_dyn.state['uvw'][:] = np.array([1., 2., 3.]) * env.normalizers['v']
             env.heli_dyn.state['pqr'][:] = np.array([4., 5., 6.]) / env.normalizers['t']
             reward, success = env._calculate_reward()
-            self.assertAlmostEqual(reward, -6., places=5)
+            self.assertAlmostEqual(reward, -12., places=5)
             self.assertFalse(success)
             # Stationary flight succeeds even with tilt, at another position,
             # and at ground level; none of those add a reward penalty.
@@ -56,6 +56,17 @@ class SmoothTaskTests(unittest.TestCase):
             self.assertEqual(env._calculate_reward(), (0., True))
         finally:
             env.close()
+
+    def test_stabilize_penalizes_steady_yaw_in_progression_mode(self):
+        env = heligym.HeliStabilize(render_mode=None, wind_enabled=False)
+        self.addCleanup(env.close)
+        env.reset(seed=42)
+        for rate in (-2., 2.):
+            env.heli_dyn.state["pqr"][2] = rate / env.normalizers["t"]
+            env._previous_values = env._target_values(env.heli_dyn.state)
+            reward, success = env._calculate_reward()
+            self.assertAlmostEqual(reward, -2., places=5)
+            self.assertFalse(success)
 
     def test_default_and_zero_smoothness_weights(self):
         for weight in (0., .25):

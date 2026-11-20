@@ -1,7 +1,9 @@
 # heli-gym 🚁
-OpenAI GYM environment for 6-DOF Helicopter simulation.
+HeliGym is a Gymnasium environment for six-degree-of-freedom (6-DOF) helicopter
+simulation and reinforcement learning.
+It uses a medium-complexity flight dynamics model, configurable aircraft and weather, and an optional OpenGL GUI.
 
-This is GYM environment package for reinforcement learning for helicopter flight tasks using minimum complexity helicopter model.
+The original implementation has been developed by Uğurcan Özalp (https://github.com/ugurcanozalp/heli-gym) based on the book "Minium-Complexity Helicopter Simulation Math Model" (Heffley and Mnich, 1988) (https://robertheffley.com/docs/Sim_modeling/Heffley-Mnich--Minimum-Complexity%20Helicopter%20Simulation%20Math%20Model--NASA%20CR%20177476.pdf).
 
 For a fresh Linux clone, install the native build dependencies first (Ubuntu/Debian):
 
@@ -19,17 +21,65 @@ working display forwarding.
 
 Install the optional training dependencies with `pip install -e '.[train]'`.
 `main.py` accepts the positional commands `tune`, `train`, `eval`, `record`, `plot`, and `render`.
-With no command it prints help. Selected commands run in pipeline order.
+With no command it prints help. Selected commands always run in this order:
+`tune → train → eval → record → plot → render`.
 
 ```bash
-python main.py train eval plot render --target-dir runs/hover  # entire pipeline
+python main.py train eval record plot render --target-dir runs/hover
 python main.py train eval --target-dir runs/hover      # headless training and evaluation
 python main.py eval plot --target-dir runs/hover       # evaluate a saved policy and plot statistics
 python main.py plot --target-dir runs/hover            # plot saved statistics only
 python main.py render --target-dir runs/hover          # one episode in the GUI
 ```
 
-### Record an episode
+### Tune PPO with Optuna
+
+Install Optuna in the same Python environment as HeliGym. Then tune one task and
+use the refinement winner to train a fresh policy.
+
+```bash
+python -m pip install optuna
+python main.py tune --task stabilize --no-wind --target-dir runs/stabilize
+python main.py train eval --use-tuned --target-dir runs/stabilize \
+  --seed 123 --total-timesteps 2000000
+```
+
+The tuner searches learning rate, discount factor (`gamma`), GAE lambda,
+clip range, and rollout length. It scores configurations by mean deterministic
+evaluation return.
+
+| Phase | Defaults |
+| --- | --- |
+| Search | 20 additional trials at 50,000 training transitions each |
+| Refinement | Top 3 search candidates plus the default PPO baseline, each trained from scratch on 3 fresh seeds at 300,000 transitions per run |
+| Evaluation | 10 episodes per trained policy, with common evaluation seeds within each phase and held-out seeds for refinement |
+
+A fresh default study schedules 32 training runs and about 4.6 million
+transitions before final training. PPO can round each budget up to fill a
+rollout. For a smaller study, adjust `--n-trials`, `--trial-timesteps`,
+`--finalists`, `--refinement-seeds`, `--refinement-timesteps`, and
+`--eval-episodes`.
+
+The study lives under `<target-dir>/optuna/`. Inspect `summary.json` for rankings
+and scores. Reuse the same settings and target directory to add trials.
+Pass `--n-trials 0` to continue refinement without adding search trials.
+Completed refinement runs are reused. For a study started with the previous
+983,040-transition refinement default, pass `--refinement-timesteps 983040`
+when resuming.
+
+```bash
+python main.py tune --summary-only --target-dir runs/stabilize
+```
+
+Refinement writes the winner's PPO and environment settings to
+`optuna/final_params.json`. Use `--use-tuned` to load it from the target
+directory, `--tune-dir runs/stabilize/optuna` to load it from another study
+directory, or `--file-args PATH` to load a specific JSON file. Explicit CLI
+options take precedence over values from the file. The export leaves the seed,
+training budget, and output directory to your new training run. You can also
+run `tune train --use-tuned` in one invocation.
+
+### Record data of an episode run
 
 ```bash
 python main.py record --target-dir runs/hover
@@ -59,20 +109,7 @@ it writes.
 python main.py record --target-dir runs/hover --num-records 3 --seed 100
 ```
 
-Each environment observation contains 29 values, in this order:
-
-- 17 measurements produced by the helicopter dynamics.
-- 8 target differences for local north position, east position, sea altitude
-  (feet, positive up), body-forward speed, heading, body-down velocity, body-right velocity, and body yaw rate.
-- 4 previous applied control commands.
-
-Target differences are current measurement minus target. The heading difference
-is wrapped to `[-π, π)`. Each unspecified or `None` target contributes zero.
-Pass a mapping to `set_target` with keys `north_loc`, `east_loc`, `sea_alt`,
-`forward_speed`, `heading`, `vertical_velocity`, `lateral_velocity`, and
-`yaw_rotation_velocity`, or pass an eight-item tuple in that order. Hover and
-forward-flight use their respective configured targets. Policies and
-normalization statistics from earlier observation layouts need retraining.
+## Episode termination
 
 Across all tasks, a crash or flip terminates the episode with a fixed **−100**
 reward, replacing that step's task reward. `info['crash']` and `info['flip']`
@@ -87,10 +124,14 @@ Use `--flip-angle 120` in the CLI or `flip_angle=120.0` in the environment
 constructor to override both limits with a single tilt threshold. Tilt is
 measured from earth up to the helicopter's up axis. Upright is 0°, horizontal
 is 90°, and inverted is 180°. Failure occurs when tilt exceeds the threshold.
-Saved runs retain their setting for evaluation and rendering. Old saved angles
+Saved runs retain their setting for evaluation, recording, and rendering. Old saved angles
 measured from the horizon are converted with `90 - old_angle`. Gentle upright
 ground contact alone is not a crash. Existing map/altitude limits and numerical
 failure handling remain active; the episode time limit remains a truncation.
+
+## Flight tasks
+
+### Goto waypoints
 
 Use `--task goto` to reach a random position target. Add `--continual` to
 pursue successive waypoints in the same episode.
@@ -123,6 +164,8 @@ explicit position targets, including hover and goto.
 python main.py train --task goto --target-dir runs/goto
 ```
 
+### Smooth controls
+
 Use `--task smooth-stabilize` or `--task smooth-hover` to add a control
 smoothness cost to the corresponding task. Each step subtracts
 `lambda * mean((action - previous_action)**2 + action**2)`
@@ -139,8 +182,22 @@ the environment constructor. The default is 0.25, and zero recovers the base tas
 python main.py train --task smooth-hover --smoothness-weight 0.1 --target-dir runs/smooth-hover
 ```
 
-Use `gym.make("ApproximateTargetValues-v0", target={"sea_alt": 2000, "forward_speed": 100})`
-to track selected targets. Velocities are signed ground-relative body components
+### Target tracking rewards
+
+Use `ApproximateTargetValues-v0` to track any subset of targets.
+
+```python
+import gymnasium as gym
+import heligym
+
+env = gym.make(
+    "ApproximateTargetValues-v0",
+    target={"sea_alt": 2000, "forward_speed": 100},
+    mode="difference",
+    diff_impact="linear",
+    render_mode=None,
+)
+``` Velocities are signed ground-relative body components
 in ft/s, altitude is positive up, and yaw rotation velocity is body rate r in rad/s.
 Each active error is current minus target divided by its characteristic scale.
 Position uses rotor diameter D, speed uses sqrt(Dg), angular rate uses 1/T
@@ -152,15 +209,22 @@ negative cost, `"progression"` (default) gives previous minus current cost for
 the same target, and `"attitude"` gives the negative instantaneous cost derivative
 per normalized time, taking the linear gradient as zero at zero error.
 
-Stabilize sets u, v and w to zero. Hover captures the initial position on each
-reset and accepts an explicit target_altitude. Forward flight uses fixed-target
+Stabilize targets zero body velocity (`u`, `v`, `w`) and zero body yaw rate
+(`r`). It charges the normalized yaw-rate error on every step, including steady
+spins in progression or attitude mode. Smooth Stabilize inherits this penalty.
+
+Hover captures the initial position on each reset and accepts an explicit `target_altitude`. Forward flight uses fixed-target
 Goto with altitude and forward speed. Goto without a constructor target retains
 its random waypoint and arrival bonus. Pass `continual=True` for successive waypoints.
 
-```bash
-python main.py train --task smooth-stabilize --target-dir runs/smooth-stabilize
-python main.py train --task smooth-hover --target-dir runs/smooth-hover
-```
+## Training settings and artifacts
+
+The default training algorithm is PPO. In a regular training run, `--n-envs`
+defaults to the smaller of 4 and the logical CPU count. You can specify a higher
+value. The default `subproc` backend uses a separate worker per environment when
+running multiple environments. For PPO, `--n-steps` (default 1024) counts steps
+per worker, and `--batch-size` (default 256) must divide the total rollout size
+`n_envs × n_steps`. Set the discount with `--gamma` (default 0.99).
 
 Use `--tensorboard` to enable TensorBoard training logs under
 `<target-dir>/tensorboard_log`. No separate log directory argument is needed.
@@ -186,7 +250,7 @@ of available vector steps before that end.
 Checkpoints are stored under `checkpoints/<run timestamp>/step_<actual timesteps>/`,
 with `model.zip`, matching `vecnormalize.pkl` when normalization is enabled, and
 `arguments.json`. Previous checkpoints survive subsequent saves and fresh training
-runs in the same target directory. Evaluate/render any checkpoint by passing its
+runs in the same target directory. Evaluate, record, or render any checkpoint by passing its
 folder as `--target-dir`. At each checkpoint, the target directory's
 `learning_curves.json` is atomically replaced with the complete episode history
 so far; only this latest cumulative history is retained. Final saving updates it
@@ -194,11 +258,15 @@ again. Checkpoint timing is independent of SB3's printed training statistics.
 `--n-checkpoints` replaces the previously unused `--checkpoint-interval` option.
 
 `train` saves the policy, normalization statistics (when enabled), run arguments,
-and episode data in `learning_curves.json`. `eval` runs ten deterministic episodes
+and episode data in `learning_curves.json`. The final `arguments.json` and each
+checkpoint's copy include `command_line` and a timezone-aware ISO 8601
+`saved_at` timestamp. `eval` runs ten deterministic episodes
 without rendering and writes episode returns, lengths, and summary statistics to
 `evaluation.json`; use `--eval-episodes` to change the count. `plot` reads these
 JSON files, saves `learning_curves.png` and/or `evaluation.png`, and displays the
 figures. On a server, set `MPLBACKEND=Agg` to save figures without opening windows.
+## Render and fly manually
+
 `render` starts one agent-piloted episode at simulator speed. Press **M** to switch
 between agent and manual keyboard control. In agent mode, movement/reset keys are
 ignored; in manual mode, the keyboard controls the helicopter. Returning to the
@@ -248,7 +316,9 @@ turbulence level, and the current wind speed and north/east/down components
 (including turbulence) in ft/s. Direction is clockwise from north. Disabled wind
 shows zero values. These display values are not added to the agent observations.
 
-Independent `eval` and `render` commands reuse the algorithm and environment
+## Wind and saved settings
+
+Independent `eval`, `record`, and agent `render` commands reuse the algorithm and environment
 settings in the run's `arguments.json`; explicit CLI options override them.
 For example, `python main.py render --target-dir runs/hover --wind` enables wind
 even if the run was trained with `--no-wind`. These two flags are mutually exclusive.
@@ -259,10 +329,13 @@ and `--turbulence-level` (1–7) to override weather settings, for example:
 python main.py render --target-dir runs/hover --wind --wind-speed 12 --wind-direction 90 --turbulence-level 3
 ```
 
-These settings are saved with the run and restored for independent evaluation
-and rendering. Unspecified values use the environment defaults when no saved
-value exists. When wind is disabled, weather settings are retained for reactivation with **W**;
-they have no effect on the aircraft until wind is enabled.
+Use `--random-wind` to sample a reproducible speed between zero and the
+`--wind-speed` upper bound (20 ft/s by default) and a direction. Training samples
+once per training seed, and evaluation and recording sample per episode seed.
+An explicit `--wind-direction` fixes the direction. Turbulence intensity stays
+at the configured level. Use `--no-random-wind` for fixed weather or `--no-wind`
+for calm conditions. In the GUI, **W** toggles wind using the configured weather.
+
 For older runs without saved settings, supply matching options yourself. Plotting
 requires the new saved episode data; an existing PNG alone cannot recreate it.
 The positional commands replace `--no-learn`, `--no-render`, and `--no-stats-plot`.
@@ -324,7 +397,32 @@ The other physical arguments are `gas_constant`, `sea_level_temperature`,
 | 3   | Pedal              |       | -1    | 1      |
 
 -------------------------------------
-### __Observation Space__
+### Observation space
+
+Each environment observation contains 30 values, in this order:
+
+- 17 measurements produced by the helicopter dynamics.
+- 8 target differences for local north position, east position, sea altitude
+  (feet, positive up), body-forward speed, heading, body-down velocity, body-right velocity, and body yaw rate.
+- 1 signed recent yaw rotation value.
+- 4 previous applied control commands.
+
+Target differences are current measurement minus target. The heading difference
+is wrapped to `[-π, π)`. Each unspecified or `None` target contributes zero.
+Pass a mapping to `set_target` with keys `north_loc`, `east_loc`, `sea_alt`,
+`forward_speed`, `heading`, `vertical_velocity`, `lateral_velocity`, and
+`yaw_rotation_velocity`, or pass an eight-item tuple in that order. Hover and
+forward-flight use their respective configured targets. Policies and
+normalization statistics from earlier observation layouts need retraining.
+
+The `recent_yaw_turns` observation starts at zero and updates once per
+physics step from the signed body yaw rate `r`. It uses an exponential
+decay with a 10-second time constant. Starting from reset, a steady
+360° turn over 10 seconds gives `+1` or `-1` depending on direction.
+Continuing to turn can take it past that magnitude, and once turning stops
+it decays toward zero. Opposite-direction turns cancel part of the
+accumulated value. This observation carries no separate reward penalty.
+
 | Num | Obs                | Unit  | Min   | Max    |
 |-----|--------------------|-------|-------|--------|
 | 0   | power              | hp    | 0     | ∞      |
@@ -352,42 +450,54 @@ The other physical arguments are `gas_constant`, `sea_level_temperature`,
 | 22  | vertical velocity difference | ft/s | -∞ | ∞ |
 | 23  | lateral velocity difference | ft/s | -∞ | ∞ |
 | 24  | yaw rotation velocity difference | rad/s | -∞ | ∞ |
-| 25  | previous collective|       | -1    | 1      |
-| 26  | previous lon. cyclic|      | -1    | 1      |
-| 27  | previous lat. cyclic|      | -1    | 1      |
-| 28  | previous pedal     |       | -1    | 1      |
+| 25  | recent yaw rotation | turns (scaled) | -∞ | ∞ |
+| 26  | previous collective|       | -1    | 1      |
+| 27  | previous lon. cyclic|      | -1    | 1      |
+| 28  | previous lat. cyclic|      | -1    | 1      |
+| 29  | previous pedal     |       | -1    | 1      |
 
 At reset, the previous controls are the trim controls used to create the
 initial steady-flight state. After each step, they are the direct controls
 most recently supplied by the agent.
 -------------------------------------
-## __Tasks__
-For now only one task is available. However, rewarding is not tested well yet.
+### Dynamics state and normalization
 
-| Environment           | Details              |
-|--------------------   |----------------------|
-| HeliHover-v0          | Hover                |
-| HeliForwardFlight-v0  | Forward Flight       |
-| HeliObliqueFlight-v0  | Oblique Flight       |
+The earth frame uses north, east, and down axes. The body frame uses forward,
+right, and down axes. State vectors are stored in `heli_dyn.state` and their
+derivatives in `heli_dyn.state_dots`.
 
--------------------------------------
-## __Tested OS__
-Environment tested on these OSs. If you have any problem, probably shared libraries for rendering 
-make it, please look at [renderer page.](heligym/envs/renderer/README.md)
+| State or derivative | Meaning | Units |
+| --- | --- | --- |
+| `xyz` | Earth-frame position | ft |
+| `state_dots["xyz"]` | Ground-relative velocity in earth axes | ft/s |
+| `uvw` | The same ground-relative velocity in body axes | ft/s |
+| `state_dots["uvw"]` | Rate of change of the body-frame velocity components, including the effect of rotating axes | ft/s² |
+| `euler` | Roll, pitch, and yaw angles | rad |
+| `pqr` | Angular velocity about the body axes | rad/s |
+| `state_dots["pqr"]` | Angular acceleration about the body axes | rad/s² |
 
-Environment should be run at least 100 FPS to simulate helicopter precisely. 
-Receiving max FPS with NVIDIA 1070-TI with Intel i7-8700K given in the table. Limiting factor of FPS is CPU because of calculation of dynamics of helicopter in Python. If system cannot reach 100 FPS, please make sure that GPU driver be installed and make sure that CPU can handle with the Python.
+When normalized state is enabled, `xyz_norm` divides position by the main
+rotor diameter `D`. `xyzdot_norm` and `uvw_norm` divide velocity by
+`sqrt(Dg)`, and `uvwdot_norm` divides by gravitational acceleration `g`.
+`pqr_norm` and `pqrdot_norm` multiply by `T` and `T²`, respectively,
+where `T = sqrt(D/g)`. The agent observation fields follow the layout above.
 
-| Tested OS      |  Max FPS |
-|----------------|----------|
-| Windows 10     |    350   |
-| Ubuntu 18.04   |    470   |
-| Ubuntu 16.04   |    500   |
+## Registered environments
 
-For the user who has lower than the version of Ubuntu 16.04 (like Ubuntu 14.04 etc.) or other Linux distros, 
-please re-compile dependent libraries. Re-compile instruction can be found at [renderer page.](heligym/envs/renderer/README.md)
+| Gymnasium ID | CLI task | Objective |
+| --- | --- | --- |
+| `Heli-v0` | `heli` | Base helicopter dynamics |
+| `ApproximateTargetValues-v0` | | Track configured position, speed, velocity, heading, or yaw-rate targets |
+| `HeliHover-v0` | `hover` | Hold the reset position |
+| `HeliForwardFlight-v0` | `forward-flight` or `forward` | Track forward speed and sea altitude |
+| `HeliStabilize-v0` | `stabilize` | Bring body-frame linear velocity and yaw rate to zero |
+| `HeliSmoothHover-v0` | `smooth-hover` | Hover with a control smoothness penalty |
+| `HeliSmoothStabilize-v0` | `smooth-stabilize` | Stabilize with a control smoothness penalty |
+| `HeliGoto-v0` | `goto` | Reach a random waypoint or follow successive waypoints with `--continual` |
 
--------------------------------------
+The simulator advances at a fixed 50 Hz (0.02 seconds per step). For native
+graphics setup and troubleshooting, see the [renderer guide](heligym/envs/renderer/README.md).
+
 ## __Project Structure__
 
 The repository is organised in layers: the Gymnasium-facing environments coordinate a reusable Python dynamics model, while rendering is isolated behind a Python API backed by a native C++/OpenGL library. Configuration and visual assets live next to the subsystem that consumes them, and tests mirror the behaviours they verify.
@@ -400,8 +510,7 @@ heli-gym/
 │       ├── __init__.py                # Environment package exports
 │       ├── helicopter.py              # Base Heli environment and simulation/render loop
 │       ├── helicopter_with_tasks.py   # Task-specific environments and reward functions
-│       ├── helis/
-│       │   └── aw109.yaml             # AW109 aircraft and environment parameters
+│       ├── config/                    # Aircraft, terrain, and weather defaults
 │       ├── dynamics/
 │       │   ├── __init__.py            # Dynamics package exports
 │       │   ├── dynamics.py            # Generic state containers and integration framework
@@ -436,16 +545,17 @@ heli-gym/
 │   ├── test_renderer_lifecycle.py     # Renderer shutdown and lifecycle unit tests
 │   └── test_native_keyboard.cpp       # Native keyboard-event integration test
 ├── resources/ex.gif                   # Animation displayed in this README
+├── main.py                            # Tuning, training, evaluation, and recording CLI
+├── ppo_tuning.py                      # Optuna search and refinement
 ├── test.py                            # Interactive simulation/demo entry point
 ├── pyproject.toml                     # Package metadata, dependencies, and included data
-├── uv.lock                            # Reproducible Python dependency lockfile
 ├── setup_install.sh                   # Guided Conda/uv/virtual-environment installer
 ├── init.sh                            # Convenience script for activating the local environment
 ├── LICENSE                            # MIT licence
 └── README.md                          # Project overview and user documentation
 ```
 
-This separation keeps reinforcement-learning tasks independent from the equations of motion: new tasks normally belong in `helicopter_with_tasks.py`, new aircraft are described under `helis/`, and changes to flight physics stay in `dynamics/`. Rendering remains a self-contained subsystem, and `api.py` shields environment code from the lower-level `ctypes` and C++ implementation. Generated caches and virtual environments are intentionally omitted from the tree above, while assets and bundled third-party dependencies are grouped rather than listing every generated or upstream file.
+This separation keeps reinforcement-learning tasks independent from the equations of motion: new tasks normally belong in `helicopter_with_tasks.py`, new aircraft are described under `heligym/envs/config/helis/`, and changes to flight physics stay in `dynamics/`. Rendering remains a self-contained subsystem, and `api.py` shields environment code from the lower-level `ctypes` and C++ implementation. Generated caches and virtual environments are intentionally omitted from the tree above, while assets and bundled third-party dependencies are grouped rather than listing every generated or upstream file.
 
 -------------------------------------
 ## __Setup__
@@ -498,7 +608,7 @@ import heligym
 env = gym.make("HeliHover-v0")
 ```
 
-The rest is usual as of any GYM environment !
+Use `reset(seed=...)` and `step(action)` to interact with the environment through the Gymnasium API.
 
 ## __TODO List__
 
@@ -513,50 +623,6 @@ To do list for Reinforcement Learning tasks.
 - Read http://avstop.com/ac/basichelicopterhandbook/ch11.html
 - [x] Add **hover** task
 - [x] Add **forward flight** task
-- [x] Add **oblique flight** task
 - [ ] Add **turning flight** task
 - [ ] Add **ground** task
 - [ ] Add **slalom maneuver** task
-
-### Tune PPO with Optuna
-
-Install Optuna in the environment you use for HeliGym, then run a study for one task.
-
-```bash
-python -m pip install optuna
-python main.py tune --task smooth-hover --target-dir runs/smooth-hover \
-  --wind --random-wind --wind-speed 20 --turbulence-level 3
-```
-
-Wind is enabled by default. Use `--no-wind` for calm conditions. With
-`--random-wind`, the tuner samples a direction and a speed between zero and
-`--wind-speed` (default upper bound 20 ft/s). Training uses one sample per
-training seed, and evaluation uses a fresh sample per episode. All candidates
-in a phase share the same scenarios. The selected turbulence level is fixed.
-
-The tuner ranks search trials by mean evaluation return, then retrains the top
-three settings and the default PPO settings from scratch on three fresh seeds
-with a larger budget. Refinement uses the same held-out evaluation seeds for
-each policy. See `--help` to adjust the trial count, budgets, and seed counts.
-PPO can round a requested budget up to its next full rollout.
-
-The study lives in `<target-dir>/optuna`. An existing study prints its saved
-`summary.json` before resuming. Use the
-same settings and `--target-dir` to add trials, or pass `--n-trials 0` to
-continue refinement without adding trials. Completed refinement runs are
-reused. Use `python main.py tune --summary-only --target-dir <dir>` to read the saved results.
-
-After refinement, `<target-dir>/optuna/final_params.json` contains the winning
-PPO settings and the study's environment options. Use `--use-tuned` to start
-fresh training in the same run directory.
-
-```bash
-python main.py tune --task stabilize --no-wind --target-dir runs/stabilize
-python main.py train eval --target-dir runs/stabilize --use-tuned \
-  --seed 123 --total-timesteps 1966080
-```
-
-To use a different study directory, pass `--tune-dir runs/stabilize/optuna`.
-To load a specific JSON file, use `--file-args`. Explicit CLI options take
-precedence over the exported settings. Training writes the effective
-parameters to `<target-dir>/arguments.json`.

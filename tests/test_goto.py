@@ -14,7 +14,7 @@ class TaskObservationTests(unittest.TestCase):
         env = heligym.Heli(render_mode=None, wind_enabled=False)
         try:
             observation, _ = env.reset(seed=42)
-            self.assertEqual(observation.shape, (29,))
+            self.assertEqual(observation.shape, (30,))
             self.assertTrue(env.observation_space.contains(observation))
             np.testing.assert_array_equal(observation[:17], env.heli_dyn.observation.astype(np.float32))
             np.testing.assert_array_equal(observation[17:25], np.zeros(8))
@@ -184,7 +184,7 @@ class GotoTests(unittest.TestCase):
             self.assertIsInstance(wrapped.unwrapped, heligym.HeliGoto)
             self.assertTrue(wrapped.unwrapped.continual)
             observation, _ = wrapped.reset(seed=42)
-            self.assertEqual(observation.shape, (29,))
+            self.assertEqual(observation.shape, (30,))
         finally:
             wrapped.close()
         self.assertEqual(gym.spec('HeliGoto-v0').entry_point, 'heligym.envs:HeliGoto')

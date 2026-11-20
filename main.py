@@ -351,7 +351,8 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     tuning = parser.add_argument_group('Optuna tuning')
     tuning.add_argument('--n-trials', type=nonnegative_int, default=20,
                         help='additional search trials (default: 20)')
-    tuning.add_argument('--trial-timesteps', type=positive_int, default=245760)
+    tuning.add_argument('--trial-timesteps', type=positive_int, default=50_000,
+                        help='training transitions per search trial (default: 50000)')
     tuning.add_argument('--refinement-timesteps', type=positive_int, default=300000,
                         help='training transitions per refinement run (default: 300000)')
     tuning.add_argument('--finalists', type=positive_int, default=3)
@@ -879,6 +880,30 @@ def load_model(algorithm, args):
     return model
 
 
+def print_run_summary(args):
+    """Show the settings most useful for the selected commands."""
+    lines = ['Run settings', f'  Output       {args.target_dir}']
+    if any(command != 'plot' for command in args.commands):
+        wind = 'off' if args.no_wind else 'randomized' if args.random_wind else 'on'
+        lines.extend([
+            f'  Environment  {args.task} · {args.heli_name} · {args.episode_seconds:g} s per episode',
+            f'  Wind         {wind}',
+            f'  Seed         {args.seed}',
+        ])
+    if 'train' in args.commands:
+        lines.extend([
+            f'  Training     {args.algorithm.upper()} · {args.total_timesteps:,} transitions'
+            f' · {args.n_envs} envs · device {args.device}',
+            f'  Discount     {args.algo_kwargs.get("gamma", args.gamma)}',
+        ])
+    if 'eval' in args.commands:
+        lines.append(f'  Evaluation   {args.eval_episodes} episodes')
+    if 'record' in args.commands:
+        plot = 'with plots' if args.record_plot else 'without plots'
+        lines.append(f'  Recording    {args.num_records or 1} episode(s) · seed {args.record_seed} · {plot}')
+    print('\n'.join(lines), flush=True)
+
+
 def main(argv=None):
     """Execute selected commands in pipeline order, sharing a model when possible."""
     original_command = sys.orig_argv if argv is None else None
@@ -917,9 +942,7 @@ def main(argv=None):
         algorithm = {'ppo': PPO, 'a2c': A2C, 'sac': SAC,
                      'td3': TD3, 'ddpg': DDPG}[args.algorithm]
 
-    config = {key: str(value) if isinstance(value, Path) else value
-              for key, value in vars(args).items()}
-    print('Arguments:\n' + json.dumps(config, indent=2), flush=True)
+    print_run_summary(args)
     model = None
     normalization_path = args.target_dir / 'vecnormalize.pkl'
     for command in args.commands:

@@ -164,11 +164,23 @@ class HeliGoto(ApproximateTargetValues):
 
 
 class HeliStabilize(ApproximateTargetValues):
-    """Bring the three body velocity components to zero."""
+    """Bring body-frame linear velocity and yaw rate to zero."""
 
     def __init__(self, heli_name="aw109", render_mode="human", wind_enabled=True, **kwargs):
-        kwargs.setdefault("target", dict(forward_speed=0., lateral_velocity=0., vertical_velocity=0.))
+        kwargs.setdefault("target", dict(forward_speed=0., lateral_velocity=0.,
+                                         vertical_velocity=0., yaw_rotation_velocity=0.))
         super().__init__(heli_name=heli_name, render_mode=render_mode, wind_enabled=wind_enabled, **kwargs)
+
+    def _calculate_reward(self):
+        reward, success_step = super()._calculate_reward()
+        target = self.task_target.get("yaw_rotation_velocity")
+        if target is not None and self.mode != "difference":
+            # Progression and attitude can pay zero during a steady spin.
+            # Difference mode already charges the yaw-rate error every step.
+            error = (float(self.heli_dyn.state["pqr"][2]) - target) * self.normalizers["t"]
+            reward -= float(self._cost(error))
+        return reward, success_step
+
 
 class _SmoothActions:
     """Penalize mean squared control changes and magnitudes relative to zero.
