@@ -1,0 +1,117 @@
+{
+  "episodes": [
+    {
+      "seed": 65,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 66,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 67,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 68,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 69,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 70,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 71,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 72,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 73,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 74,
+      "steps": 254,
+      "reward": -149.5295520081824,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    }
+  ],
+  "mean_reward": -149.5295520081824,
+  "std_reward": 0.0,
+  "mean_steps": 254.0,
+  "settings": {
+    "task": "smooth-forward",
+    "algorithm": "ppo",
+    "episode_seconds": 60.0,
+    "no_wind": true,
+    "random_wind": false,
+    "wind_speed": null,
+    "wind_direction": null,
+    "turbulence_level": null
+  }
+}
