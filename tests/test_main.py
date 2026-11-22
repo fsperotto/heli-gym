@@ -277,6 +277,43 @@ class CheckpointTests(unittest.TestCase):
             model = main.train(self.algorithm, args)
         return model, history_lengths
 
+    def test_pretrained_training_inherits_weights_and_observation_stats(self):
+        import torch
+
+        with tempfile.TemporaryDirectory() as directory:
+            source_dir = Path(directory) / 'source'
+            target_dir = Path(directory) / 'target'
+            source, _ = self.train_run(str(source_dir), timesteps=8, checkpoints=0)
+            source_normalization = source.get_vec_normalize_env()
+            config_path = source_dir / 'arguments.json'
+            config = json.loads(config_path.read_text())
+            config['algo_kwargs'] = {'gamma': .9}
+            main.write_json(config_path, config)
+            args = main.parse_args(['train', '--pretrained-dir', str(source_dir),
+                                    '--target-dir', str(target_dir), '--task', 'smooth-goto',
+                                    '--gamma', '.997', '--total-timesteps', '4'])
+
+            def check_initial_state(model, **kwargs):
+                for name, value in model.policy.state_dict().items():
+                    torch.testing.assert_close(value, source.policy.state_dict()[name])
+                self.assertFalse(model.policy.optimizer.state)
+                normalization = model.get_vec_normalize_env()
+                np.testing.assert_array_equal(normalization.obs_rms.mean, source_normalization.obs_rms.mean)
+                self.assertLess(normalization.ret_rms.count, source_normalization.ret_rms.count)
+                self.assertEqual(normalization.gamma, .997)
+                self.assertEqual((model.gamma, model.n_steps), (.997, 4))
+                self.assertEqual(kwargs['total_timesteps'], 4)
+                return model
+
+            with patch.object(main, 'make_env', side_effect=lambda *a, **kw: self.monitor(EpisodeEnv())) as factory, \
+                    patch.object(self.algorithm, 'learn', autospec=True, side_effect=check_initial_state), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                main.train(self.algorithm, args)
+            self.assertEqual(factory.call_args.args[0], 'smooth-goto')
+            saved = json.loads((target_dir / 'arguments.json').read_text())
+            self.assertEqual(saved['pretrained_dir'], str(source_dir))
+            self.assertEqual(saved['gamma'], .997)
+
     def test_tensorboard_logs_are_created_only_when_enabled(self):
         for enabled in (False, True):
             with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as directory:

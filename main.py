@@ -125,16 +125,24 @@ def nonnegative_int(value):
     return result
 
 
-def load_file_args(parser, path):
+def load_file_args(parser, path, *, saved_run=False):
     """Read JSON defaults keyed by argparse destination names."""
     try:
         values = json.loads(path.read_text())
     except (OSError, ValueError) as error:
-        parser.error(f'--file-args {path}: {error}')
+        parser.error(f'{path}: {error}')
     if not isinstance(values, dict):
-        parser.error('--file-args must contain a JSON object')
+        parser.error(f'{path} must contain a JSON object')
 
     options = {action.dest: action for action in parser._actions if action.option_strings}
+    if saved_run:
+        # A saved run contains invocation metadata and may point to other runs.
+        excluded = {'target_dir', 'pretrained_dir', 'file_args', 'use_tuned', 'tune_dir',
+                    'manual', 'summary_only', 'help'}
+        if values.get('flip_angle') is not None and 'flip_angle_reference' not in values:
+            values['flip_angle'] = 90 - values['flip_angle']
+        values = {key: value for key, value in values.items()
+                  if key in options and key not in excluded}
     defaults = {}
     for key, value in values.items():
         if key not in options or key in ('file_args', 'tune_dir', 'use_tuned', 'help'):
@@ -161,7 +169,7 @@ def load_file_args(parser, path):
             if action.choices is not None and value not in action.choices:
                 raise ValueError(f'expected one of {list(action.choices)}')
         except (ValueError, argparse.ArgumentTypeError) as error:
-            parser.error(f'--file-args: invalid {key!r}: {error}')
+            parser.error(f'{path}: invalid {key!r}: {error}')
         defaults[key] = value
     return defaults
 
@@ -217,9 +225,12 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
                         help='wind vector direction in degrees clockwise from north (0 north, 90 east); uses the environment default if unspecified; retained for W reactivation when wind is disabled')
     environment.add_argument('--turbulence-level', '--turbulence_level', type=int, choices=range(1, 8), default=None,
                         help='turbulence intensity from 1 (lightest) to 7 (strongest); uses the environment default if unspecified; retained for W reactivation when wind is disabled')
-    environment.add_argument('--no-online-normalization', 
-                        action='store_true',
-                        help='disable SB3 online observation and reward normalization during training (based on running means and variances) and skip loading observation statistics for evaluation; disabling it is not recommended for PPO/A2C, but may be useful for SAC/TD3/DDPG')
+    normalization = environment.add_mutually_exclusive_group()
+    normalization.add_argument('--no-online-normalization', action='store_true',
+                               help='disable online observation and reward normalization')
+    normalization.add_argument('--online-normalization', dest='no_online_normalization',
+                               action='store_false', help='enable online normalization')
+    parser.set_defaults(no_online_normalization=False)
 
     execution = parser.add_argument_group('Training and execution')
     execution.add_argument('--algorithm', 
@@ -272,7 +283,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     output.add_argument('--pretrained-dir', 
                         type=Path, 
                         default=None,
-                        help='currently unused; training always starts a new model; eval/render load from --target-dir')
+                        help='initialize training from a saved model and its run settings')
     output.add_argument('--n-checkpoints', type=nonnegative_int, default=0,
                         help='number of intermediate model checkpoints before the final save (default: 0); evenly spaced across total timesteps, with up to n-envs - 1 transitions of rounding; capped by available vector steps')
     policy = parser.add_argument_group('Policy and shared optimization settings', description="Applicable constructor settings may be overridden by --algo-kwargs.")
@@ -393,9 +404,42 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
         if args.use_tuned or args.tune_dir is not None:
             parameter_path = (args.tune_dir or args.target_dir / 'optuna') / 'final_params.json'
     file_defaults = load_file_args(parser, parameter_path) if parameter_path else {}
-    if file_defaults:
-        parser.set_defaults(**file_defaults)
+    pretrained_defaults = {}
+    source_dir = None
+    # Tuning uses fresh policies. A combined command loads the source for training
+    # after the tuning phase, together with any exported Optuna settings.
+    if 'train' in commands and ('tune' not in commands or after_tune):
+        source_dir = args.pretrained_dir or file_defaults.get('pretrained_dir')
+        if source_dir is not None:
+            pretrained_defaults = load_file_args(parser, source_dir / 'arguments.json', saved_run=True)
+            if not (source_dir / 'model.zip').is_file():
+                parser.error(f'--pretrained-dir: no model.zip in {source_dir}')
+            # Direct options beat matching entries in the source's algo_kwargs.
+            inherited_kwargs = pretrained_defaults.get('algo_kwargs', {}).copy()
+            options = parser._option_string_actions
+            explicit = {options[name].dest for token in argv
+                        if (name := token.partition('=')[0]) in options}
+            for key in explicit | file_defaults.keys():
+                inherited_kwargs.pop(key, None)
+            if 'policy_kwargs' in inherited_kwargs and 'net_arch' in explicit | file_defaults.keys():
+                policy = inherited_kwargs['policy_kwargs'].copy()
+                policy['net_arch'] = args.net_arch if 'net_arch' in explicit else file_defaults['net_arch']
+                inherited_kwargs['policy_kwargs'] = policy
+            if 'algo_kwargs' in pretrained_defaults:
+                pretrained_defaults['algo_kwargs'] = inherited_kwargs
+    if pretrained_defaults or file_defaults:
+        parser.set_defaults(**{**pretrained_defaults, **file_defaults})
         args = parser.parse_intermixed_args(argv)
+    if source_dir is not None:
+        if args.target_dir.resolve() == source_dir.resolve():
+            parser.error('--target-dir must differ from --pretrained-dir')
+        source_algorithm = pretrained_defaults.get('algorithm')
+        if source_algorithm and args.algorithm != source_algorithm:
+            parser.error(f'--pretrained-dir contains a {source_algorithm} policy. '
+                         f'Training with {args.algorithm} requires a matching source policy')
+        if (not args.no_online_normalization and pretrained_defaults.get('no_online_normalization') is False
+                and not (source_dir / 'vecnormalize.pkl').is_file()):
+            parser.error(f'--pretrained-dir: no vecnormalize.pkl in {source_dir} for the normalized policy')
     # Reuse the training configuration for independent evaluation, recording, and rendering.
     # Parsing again preserves explicit CLI overrides, including --algorithm.
     saved_settings = args.target_dir / 'arguments.json'
@@ -815,6 +859,7 @@ def write_json(path, value):
 def train(algorithm, args):
     """Train and persist the model, normalization, configuration and episode data."""
     from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.running_mean_std import RunningMeanStd
     from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
     class TrainingCallback(BaseCallback):
@@ -874,7 +919,6 @@ def train(algorithm, args):
               for key, value in vars(args).items()}
     config['flip_angle_reference'] = 'upright'
     config['saved_at'] = saved_at()
-    write_json(args.target_dir / 'arguments.json', config)
     wind_speed, wind_direction = run_wind(args, args.seed)
     factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
                       no_wind=args.no_wind, wind_speed=wind_speed,
@@ -890,14 +934,36 @@ def train(algorithm, args):
             env = DummyVecEnv([factory] * args.n_envs)
     training_callback = TrainingCallback()
     try:
+        source = None
+        if args.pretrained_dir is not None:
+            with progress(f'Loading pretrained policy from {args.pretrained_dir}'):
+                source = algorithm.load(str(args.pretrained_dir / 'model.zip'), device='cpu')
+            if (source.observation_space != env.observation_space
+                    or source.action_space != env.action_space):
+                raise ValueError('Pretrained observation or action space differs from the current environment')
         if not args.no_online_normalization:
-            env = VecNormalize(env, norm_obs=True, norm_reward=True, gamma=settings['gamma'])
+            source_stats = args.pretrained_dir / 'vecnormalize.pkl' if source is not None else None
+            if source_stats is not None and source_stats.is_file():
+                env = VecNormalize.load(str(source_stats), env)
+                env.training = True
+                env.norm_reward = True
+                env.gamma = settings['gamma']
+                env.ret_rms = RunningMeanStd(shape=())
+            else:
+                env = VecNormalize(env, norm_obs=True, norm_reward=True, gamma=settings['gamma'])
         env.seed(args.seed)
         with progress(f'Initializing {args.algorithm.upper()} policy (device: {args.device})', multiline=True):
             model = algorithm('MlpPolicy', env, seed=args.seed, device=args.device,
                               verbose=args.verbose,
                               tensorboard_log=str(args.target_dir / 'tensorboard_log') if args.tensorboard else None,
                               **settings)
+            if source is not None:
+                try:
+                    model.policy.load_state_dict(source.policy.state_dict())
+                except RuntimeError as error:
+                    raise ValueError('Pretrained weights do not match the requested policy architecture') from error
+                del source
+        write_json(args.target_dir / 'arguments.json', config)
         with progress(f'Training for {args.total_timesteps} transitions', multiline=True):
             model.learn(total_timesteps=args.total_timesteps, callback=training_callback)
         with progress(f'Saving final model and statistics to {args.target_dir}', multiline=True):
@@ -944,6 +1010,8 @@ def print_run_summary(args):
             f'  Seed         {args.seed}',
         ])
     if 'train' in args.commands:
+        if args.pretrained_dir is not None:
+            lines.append(f'  Pretrained   {args.pretrained_dir}')
         lines.extend([
             f'  Training     {args.algorithm.upper()} · {args.total_timesteps:,} transitions'
             f' · {args.n_envs} envs · device {args.device}',
@@ -975,7 +1043,7 @@ def main(argv=None):
         tune(args)
         if args.summary_only or args.commands == ['tune']:
             return
-        if args.use_tuned or args.tune_dir is not None:
+        if args.use_tuned or args.tune_dir is not None or args.pretrained_dir is not None:
             args = parse_args(argv, after_tune=True)
             if original_command:
                 args.command_line = shlex.join(original_command)

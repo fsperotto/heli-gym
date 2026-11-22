@@ -246,6 +246,25 @@ running multiple environments. For PPO, `--n-steps` (default 1024) counts steps
 per worker, and `--batch-size` (default 256) must divide the total rollout size
 `n_envs × n_steps`. Set the discount with `--gamma` (default 0.99).
 
+### Fine-tune a saved policy
+
+Use `--pretrained-dir` with a run or checkpoint directory containing
+`model.zip` and `arguments.json`. The source supplies the starting policy
+weights, observation normalization statistics (if enabled), and defaults for
+the new run. Explicit CLI options take precedence over settings from
+`--file-args` or `--use-tuned`, which in turn take precedence over the source
+run's settings.
+
+```bash
+python main.py train eval --pretrained-dir pretrained/goto_no_wind \
+  --task smooth-goto --continual --smoothness-weight 0.03 \
+  --target-dir runs/smooth-goto-finetune --total-timesteps 500000 --device cpu
+```
+
+The source and destination directories must differ. Use a source with the same
+algorithm, policy architecture, and observation/action spaces. Training starts
+new optimizer, reward-normalization, and timestep state.
+
 Use `--tensorboard` to enable TensorBoard training logs under
 `<target-dir>/tensorboard_log`. No separate log directory argument is needed.
 `--no-tensorboard` disables logging, which is the default. For example:
