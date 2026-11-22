@@ -1,6 +1,7 @@
 """Keyboard-only rendering and handoff between human and agent pilots."""
 import contextlib
 import io
+from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -140,6 +141,45 @@ class ManualRenderTests(unittest.TestCase):
                 np.testing.assert_allclose(env.actions[0], [.3, .3, .3, .3])
             else:
                 np.testing.assert_array_equal(model.predict.call_args_list[0].args[0], [[42.]])
+
+    def test_replay_pauses_without_consuming_controls_and_hands_off(self):
+        args = main.parse_args(['render', '--manual'])
+        env = PilotEnv([['p'], ['p', 'z'], ['x'], ['up']])
+        playback = np.array([[.2, .3, .4, .5], [.5, .4, .3, .2]])
+        modes = []
+        env.render.side_effect = lambda: modes.append(env.pilot_mode)
+        with patch.object(main, 'make_env', return_value=env), patch.object(main.time, 'sleep'):
+            result = main.run_episode(None, args, None, 42, render=True, replay_actions=playback)
+        self.assertEqual(result['steps'], 3)
+        np.testing.assert_array_equal(env.actions[:2], playback)
+        np.testing.assert_allclose(env.actions[2], [.5, .6, .3, .2])
+        self.assertEqual(modes, ['replay', 'replay', 'replay', 'manual', 'manual'])
+        self.assertTrue(env.closed)
+
+    def test_replay_uses_episode_seed_and_allows_environment_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main.write_json(root / 'config.json', {
+                'commands': ['record'], 'target_dir': 'old/output', 'episode_seed': 305,
+                'seed': 42, 'task': 'smooth-goto', 'episode_seconds': 120, 'no_wind': True,
+            })
+            (root / 'actions.csv').write_text('step,collective,longitudinal_cyclic,lateral_cyclic,pedal\n'
+                                              '1,0.1,0.2,0.3,0.4\n')
+            args = main.parse_args(['replay', '--source-dir', directory])
+            self.assertEqual((args.seed, args.task, args.episode_seconds), (305, 'smooth-goto', 120))
+            self.assertNotEqual(args.target_dir, Path('old/output'))
+            with patch.object(main, 'prepare_renderer') as prepare, \
+                    patch.object(main, 'load_model') as load, \
+                    patch.object(main, 'run_episode', return_value=dict(
+                        steps=1, reward=0., termination_reasons=['truncated'])) as run:
+                main.main(['replay', '--source-dir', directory, '--seed', '19', '--task', 'hover', '--wind'])
+            prepare.assert_called_once()
+            load.assert_not_called()
+            self.assertEqual(run.call_args.args[3], 19)
+            self.assertEqual(run.call_args.args[1].task, 'hover')
+            self.assertFalse(run.call_args.args[1].no_wind)
+            np.testing.assert_array_equal(run.call_args.kwargs['replay_actions'],
+                                          np.array([[.1, .2, .3, .4]], dtype=np.float32))
 
     def test_manual_pause_keeps_physics_still_and_holds_controls(self):
         args = main.parse_args(['render', '--manual'])

@@ -262,17 +262,36 @@ def get_camera_pos(camera):
     return np.ctypeslib.as_array(position, shape=(3,)).copy()
 
 
-def update_helicopter_camera(window, north, east, down, bearing):
-    """Update the camera from a helicopter pose; V selects the tracking mode."""
-    try:
-        update = lib.update_helicopter_camera
-    except AttributeError as exc:
-        #print("Rebuild the native renderer to enable chase view.")
+def update_helicopter_camera(window, north, east, down, bearing, roll=0.0, pitch=0.0):
+    """Update the tracked position and attitude in the renderer."""
+    update = getattr(lib, 'update_helicopter_pose', None)
+    if update is not None:
+        update.argtypes = [ctypes.c_void_p] + [ctypes.c_float] * 6
+        update.restype = None
+        update(window, north, east, down, bearing, roll, pitch)
         return
-    
-    update.argtypes = [ctypes.c_void_p] + [ctypes.c_float] * 4
-    update.restype = None
-    update(window, north, east, down, bearing)
+
+    update = getattr(lib, 'update_helicopter_camera', None)
+    if update is not None:
+        update.argtypes = [ctypes.c_void_p] + [ctypes.c_float] * 4
+        update.restype = None
+        update(window, north, east, down, bearing)
+
+
+def set_helicopter_cockpit(window, model, rgba):
+    """Upload packed RGBA artwork to the window's OpenGL context."""
+    upload = getattr(lib, 'set_helicopter_cockpit', None)
+    if upload is None:
+        return False
+    pixels = np.ascontiguousarray(rgba, dtype=np.uint8)
+    if pixels.ndim != 3 or pixels.shape[2] != 4 or not all(pixels.shape):
+        raise ValueError('Cockpit artwork must be a nonempty (height, width, 4) RGBA array')
+    height, width, _ = pixels.shape
+    upload.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte),
+                       ctypes.c_uint, ctypes.c_uint]
+    upload.restype = None
+    upload(window, model, pixels.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)), width, height)
+    return True
 
 ###################################################################################
 lib.is_visible.argtypes = [ctypes.c_void_p]

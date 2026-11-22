@@ -20,7 +20,7 @@ working display forwarding.
 ## Training and saved runs
 
 Install the optional training dependencies with `pip install -e '.[train]'`.
-`main.py` accepts the positional commands `tune`, `train`, `eval`, `record`, `plot`, and `render`.
+`main.py` accepts the pipeline commands `tune`, `train`, `eval`, `record`, `plot`, and `render`, plus standalone `replay` and `reload`.
 With no command it prints help. Selected commands always run in this order:
 `tune → train → eval → record → plot → render`.
 
@@ -108,6 +108,43 @@ it writes.
 ```bash
 python main.py record --target-dir runs/hover --num-records 3 --seed 100
 ```
+
+### Replay a recording
+
+```bash
+python main.py replay --source-dir runs/hover/record
+python main.py replay --source-dir runs/hover/records/000001 --wind --wind-speed 12
+```
+
+Replay opens the viewer and applies the controls in `actions.csv` in order. It
+uses the recorded episode seed and environment settings from `config.json`.
+Explicit CLI settings take precedence, including `--seed`, `--task`, and wind
+options. Replay does not load a policy. When the observation layout matches,
+it reports the first difference from `observations.csv` or confirms the match.
+
+Use **P** to pause or resume. The viewer shows pilot mode **2** during replay.
+When the controls run out and the episode is still active, the viewer switches
+to manual control and holds the last applied command. If the episode ends
+earlier, replay stops at that terminal step.
+
+### Restore a saved timestep
+
+Record with `--full-state` to save a `states.json` in every episode folder.
+It contains snapshots of the flight and wind dynamics, random-generator
+states, task targets and progress, previous controls, and episode timers.
+
+```bash
+python main.py record --target-dir runs/hover --full-state
+python main.py reload --source-dir runs/hover/record --timestep 157
+```
+
+A timestep is the saved step number. Step 0 is the reset state, and step 157
+is the state after applying control 157. Reload uses the environment settings
+in the recording and opens the viewer paused at that state. Press **P** to
+resume with manual controls. At an already terminal snapshot, press **R** to
+start a new episode. Reload uses no policy and leaves the recorded files
+untouched. Use `replay` when you want to change the environment settings and
+apply the entire recorded control sequence.
 
 ## Episode termination
 
@@ -325,7 +362,10 @@ python main.py render --target-dir runs/goto   # agent initially; M toggles manu
 Manual controls are **Z/S** (collective), **Up/Down** (longitudinal cyclic),
 **Right/Left** (lateral cyclic), and **D/Q** (pedals), each changing the command
 by 0.2 per key press. **X** zeros the controls; **R** restarts the episode.
-**Esc** closes the window and **V** switches the camera view in either pilot mode.
+**Esc** closes the window. **V** cycles through fixed, chase, and cockpit views.
+The cockpit camera follows the helicopter's full attitude and uses the supplied
+AW109 cockpit artwork. Press **H** to hide the information panels for an
+unobstructed cockpit view.
 **W** toggles wind in either mode, preserving the configured mean speed/direction
 and turbulence settings for reactivation; it does not reset or re-trim the aircraft.
 **T** stops and re-trims the helicopter at its current north/east position and sea
@@ -373,11 +413,29 @@ python main.py render --target-dir runs/hover --wind --wind-speed 12 --wind-dire
 ```
 
 Use `--random-wind` to sample a reproducible speed between zero and the
-`--wind-speed` upper bound (20 ft/s by default) and a direction. Training samples
-once per training seed, and evaluation and recording sample per episode seed.
+`--wind-speed` upper bound (20 ft/s by default) and a direction. Training, evaluation, and recording all sample from the episode seed.
 An explicit `--wind-direction` fixes the direction. Turbulence intensity stays
 at the configured level. Use `--no-random-wind` for fixed weather or `--no-wind`
 for calm conditions. In the GUI, **W** toggles wind using the configured weather.
+
+### Reproduce an episode
+
+Use the same environment settings, episode seed, and applied controls to
+reproduce the raw trajectory. The seed fixes the initial waypoint sequence,
+randomized mean wind, and turbulence. Training starts workers at
+`seed + worker_index`; automatically reset episodes expose their generated
+seed in `info["episode_seed"]`. A standalone `eval`, `render`, or `record`
+uses an explicit `--seed` directly. Without one, it starts at the saved
+training seed plus the worker count. A combined `train eval` keeps that
+offset for evaluation.
+
+```bash
+python main.py record --target-dir runs/hover --seed 43
+```
+
+To reproduce actions from a policy, use the same checkpoint, normalization
+statistics, and deterministic inference. Training may sample exploratory
+actions and update both its policy and normalization during the episode.
 
 For older runs without saved settings, supply matching options yourself. Plotting
 requires the new saved episode data; an existing PNG alone cannot recreate it.

@@ -1,6 +1,6 @@
 """Train, evaluate, record, plot statistics, or render a helicopter controller.
 
-Commands run in pipeline order: tune -> train -> eval -> record -> plot -> render.
+Commands run in pipeline order: tune -> train -> eval -> record -> plot -> render. Replay and reload run separately.
 With no command, display help. Select one or more commands to run those stages. eval runs deterministic episodes without a GUI; render shows one episode.
 Standalone eval/record/render load the model and saved run settings from --target-dir;
 explicit command-line settings override saved settings.
@@ -14,6 +14,8 @@ Examples:
     python main.py train --total-timesteps 128 --n-envs 1 --n-steps 128 --batch-size 64
     python main.py eval plot --target-dir runs/hover
     python main.py record --target-dir runs/hover
+    python main.py replay --source-dir runs/hover/record
+    python main.py reload --source-dir runs/hover/record --timestep 157
     python main.py render --target-dir runs/hover
 
 Install training dependencies with: pip install -e '.[train]'
@@ -38,14 +40,13 @@ Tasks:
         reward; reward remains zero until failure or the episode time limit.
 """
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 import csv
 from datetime import datetime
 from functools import partial
 import json
 import math
 import os
-import random
 import shlex
 import sys
 from pathlib import Path
@@ -54,7 +55,7 @@ import time
 from zoneinfo import ZoneInfo
 
 
-COMMANDS = ('tune', 'train', 'eval', 'record', 'plot', 'render')
+COMMANDS = ('tune', 'train', 'eval', 'record', 'plot', 'render', 'replay', 'reload')
 
 TOLERANCE_OPTIONS = {
     'horizontal_tolerance': 'horizontal position tolerance in ft (default: 20)',
@@ -125,7 +126,7 @@ def nonnegative_int(value):
     return result
 
 
-def load_file_args(parser, path, *, saved_run=False):
+def load_file_args(parser, path, *, saved_run=False, recording=False):
     """Read JSON defaults keyed by argparse destination names."""
     try:
         values = json.loads(path.read_text())
@@ -138,7 +139,11 @@ def load_file_args(parser, path, *, saved_run=False):
     if saved_run:
         # A saved run contains invocation metadata and may point to other runs.
         excluded = {'target_dir', 'pretrained_dir', 'file_args', 'use_tuned', 'tune_dir',
-                    'manual', 'summary_only', 'help'}
+                    'manual', 'summary_only', 'source_dir', 'timestep', 'help'}
+        if recording:
+            if 'episode_seed' not in values:
+                parser.error(f'{path}: recording is missing episode_seed')
+            values['seed'] = values['episode_seed']
         if values.get('flip_angle') is not None and 'flip_angle_reference' not in values:
             values['flip_angle'] = 90 - values['flip_angle']
         values = {key: value for key, value in values.items()
@@ -179,7 +184,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('commands', nargs='*', metavar='COMMAND',
-                        help='tune, train, eval, record, plot, render; selected stages run in that order')
+                        help='tune, train, eval, record, plot, render, or standalone replay/reload')
     parameter_source = parser.add_mutually_exclusive_group()
     parameter_source.add_argument('--file-args', type=Path,
                         help='JSON defaults such as final_params.json; explicit CLI options override them')
@@ -187,6 +192,10 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
                                   help='load final_params.json from this study directory')
     parameter_source.add_argument('--use-tuned', action='store_true',
                                   help='load final_params.json from <target-dir>/optuna')
+    parser.add_argument('--source-dir', type=Path,
+                        help='recording directory for replay or reload')
+    parser.add_argument('--timestep', type=nonnegative_int, default=0,
+                        help='saved step to reload (default: 0, before the first action)')
     parser.add_argument('--manual', action='store_true',
                         help='render with keyboard controls only, without loading a policy')
     environment = parser.add_argument_group('Environment')
@@ -218,7 +227,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
                       help='disable steady wind and turbulence during training, evaluation and rendering')
     parser.set_defaults(no_wind=False)
     environment.add_argument('--random-wind', action=argparse.BooleanOptionalAction, default=False,
-                             help='sample a wind speed up to --wind-speed (default 20 ft/s) and a direction for each training or evaluation seed')
+                             help='sample a wind speed up to --wind-speed (default 20 ft/s) and a direction for each episode seed')
     environment.add_argument('--wind-speed', type=float, default=None,
                         help='steady wind speed in ft/s; uses the environment default if unspecified; retained for W reactivation when wind is disabled')
     environment.add_argument('--wind-direction', type=float, default=None,
@@ -248,7 +257,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     execution.add_argument('--seed', 
                         type=int, 
                         default=42,
-                        help='training seed; evaluation uses seed + n-envs (default: 42)')
+                        help='training seed; standalone eval/render/record use an explicit seed directly (default training seed: 42)')
     execution.add_argument('--device', 
                         default='auto',
                         choices=['cpu', 'cuda', 'auto'],  
@@ -262,6 +271,8 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
                         choices=[0, 1, 2], 
                         default=1,
                         help='algorithm training verbosity: 0 silent, 1 info, 2 debug; runner messages still print (default: 1)')
+    execution.add_argument('--full-state', action='store_true',
+                        help='record a restorable simulator snapshot at every step')
     execution.add_argument('--num-records', type=positive_int,
                         help='record N episodes under <target-dir>/records with consecutive seeds')
     execution.add_argument('--record-plot', action=argparse.BooleanOptionalAction, default=True,
@@ -404,6 +415,20 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
         if args.use_tuned or args.tune_dir is not None:
             parameter_path = (args.tune_dir or args.target_dir / 'optuna') / 'final_params.json'
     file_defaults = load_file_args(parser, parameter_path) if parameter_path else {}
+    if {'replay', 'reload'}.intersection(commands):
+        command = 'reload' if 'reload' in commands else 'replay'
+        if commands != [command]:
+            parser.error(f'{command} must be run separately from other commands')
+        recording_dir = args.source_dir or file_defaults.get('source_dir')
+        if recording_dir is None:
+            parser.error(f'{command} requires --source-dir')
+        recorded_defaults = load_file_args(parser, recording_dir / 'config.json',
+                                           saved_run=True, recording=True)
+        filename = 'states.json' if command == 'reload' else 'actions.csv'
+        if not (recording_dir / filename).is_file():
+            hint = '; record again with --full-state' if command == 'reload' else ''
+            parser.error(f'--source-dir: no {filename} in {recording_dir}{hint}')
+        file_defaults = {**recorded_defaults, **file_defaults}
     pretrained_defaults = {}
     source_dir = None
     # Tuning uses fresh policies. A combined command loads the source for training
@@ -430,6 +455,15 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     if pretrained_defaults or file_defaults:
         parser.set_defaults(**{**pretrained_defaults, **file_defaults})
         args = parser.parse_intermixed_args(argv)
+    if 'reload' in commands:
+        environment_fields = ('seed', 'task', 'heli_name', 'episode_seconds', 'flip_angle',
+                              'smoothness_weight', 'continual', 'no_wind', 'random_wind',
+                              'wind_speed', 'wind_direction', 'turbulence_level', *TOLERANCE_OPTIONS)
+        changed = [key for key in environment_fields
+                   if key in recorded_defaults and getattr(args, key) != recorded_defaults[key]]
+        if changed:
+            parser.error('reload requires the recorded environment settings. '
+                         'Use replay to change: ' + ', '.join(changed))
     if source_dir is not None:
         if args.target_dir.resolve() == source_dir.resolve():
             parser.error('--target-dir must differ from --pretrained-dir')
@@ -483,31 +517,23 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     reserved = {'policy', 'env', 'seed', 'device', 'verbose', 'tensorboard_log'}
     if reserved.intersection(args.algo_kwargs):
         parser.error('--algo-kwargs cannot override ' + ', '.join(sorted(reserved)))
+    explicit_seed = any(arg == '--seed' or arg.startswith('--seed=') for arg in argv)
+    replay_seed = args.seed if explicit_seed or 'seed' in file_defaults else args.seed + args.n_envs
+    if {'eval', 'render'}.intersection(commands):
+        args.evaluation_seed = args.seed + args.n_envs if 'train' in commands else replay_seed
+    if 'replay' in commands and args.seed < 0:
+        parser.error('replay seed must be nonnegative')
     if 'record' in commands:
-        explicit_seed = any(arg == '--seed' or arg.startswith('--seed=') for arg in argv)
-        args.record_seed = args.seed if explicit_seed or 'seed' in file_defaults else args.seed + args.n_envs
+        args.record_seed = replay_seed
         if args.record_seed < 0 or args.record_seed + (args.num_records or 1) > 2**32:
             parser.error('recording seeds must be in [0, 2**32)')
     args.command_line = shlex.join([sys.executable, "main.py", *argv])
     return args
 
 
-def sample_wind(seed, speed_limit=None):
-    """Sample a steady wind speed and direction from a reproducible seed."""
-    rng = random.Random(seed)
-    return rng.uniform(0, 20.0 if speed_limit is None else speed_limit), rng.uniform(0, 360)
-
-
-def run_wind(args, seed):
-    if args.no_wind or not args.random_wind:
-        return args.wind_speed, args.wind_direction
-    speed, direction = sample_wind(seed, args.wind_speed)
-    return speed, direction if args.wind_direction is None else args.wind_direction
-
-
 def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
              wind_speed=None, wind_direction=None, turbulence_level=None, monitor=True, flip_angle=None,
-             smoothness_weight=0.25, continual=False, tolerances=None):
+             smoothness_weight=0.25, continual=False, tolerances=None, random_wind=False):
     """Construct each worker locally so no native objects cross process boundaries."""
     import heligym
     classes = {'hover': heligym.HeliHover, 'forward': heligym.HeliForwardFlight,
@@ -528,7 +554,8 @@ def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
     if task in ('goto', 'smooth-goto'):
         task_kwargs['continual'] = continual
     env = classes[task](heli_name=heli_name, render_mode=render_mode,
-                        wind_enabled=not no_wind, flip_angle=flip_angle, **weather, **task_kwargs)
+                        wind_enabled=not no_wind, random_wind=random_wind,
+                        flip_angle=flip_angle, **weather, **task_kwargs)
     env.set_max_time(episode_seconds)
     if monitor:
         from stable_baselines3.common.monitor import Monitor
@@ -594,7 +621,8 @@ def episode_end_reasons(info, terminated, truncated, render=False):
     return reasons
 
 
-def run_episode(model, args, normalization_path, seed, render=False, on_step=None):
+def run_episode(model, args, normalization_path, seed, render=False, on_step=None,
+                replay_actions=None, on_state=None, initial_state=None):
     """Run one episode with frozen normalization and original task rewards."""
     import numpy as np
     if render and args.manual:
@@ -605,11 +633,10 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
     label = 'Creating GUI environment and loading graphics' if render else f'Creating evaluation environment (seed {seed})'
     with progress(label, multiline=render):
         from heligym.envs.helicopter import DT
-        wind_speed, wind_direction = run_wind(args, seed)
         factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
                           render_mode='human' if render else None, no_wind=args.no_wind,
-                          wind_speed=wind_speed, wind_direction=wind_direction,
-                          turbulence_level=args.turbulence_level, flip_angle=args.flip_angle,
+                          wind_speed=args.wind_speed, wind_direction=args.wind_direction,
+                          random_wind=args.random_wind, turbulence_level=args.turbulence_level, flip_angle=args.flip_angle,
                           smoothness_weight=args.smoothness_weight, continual=args.continual,
                           tolerances={key: getattr(args, key) for key in TOLERANCE_OPTIONS
                                       if getattr(args, key) is not None})
@@ -635,15 +662,27 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
                 env.seed(seed)
                 obs = env.reset()
             helicopter = raw_env.unwrapped
+            if initial_state is not None:
+                from heligym.envs.episode_state import restore_episode_state
+                obs = restore_episode_state(helicopter, initial_state["state"])[None, :]
+                helicopter.paused = True
             if on_step is not None:
                 initial_obs = env.get_original_obs() if normalize else obs
-                on_step(0, None, initial_obs[0])
-            manual = model is None
-            helicopter.pilot_mode = 'manual' if manual else 'agent'
+                on_step(0 if initial_state is None else helicopter.step_count, None, initial_obs[0])
+            replaying = replay_actions is not None and len(replay_actions) > 0
+            manual = model is None and not replaying
+            helicopter.pilot_mode = 'replay' if replaying else 'manual' if manual else 'agent'
         total_reward = 0.0
         steps = 0
         terminated = truncated = False
         final_info = {}
+        if initial_state is not None:
+            total_reward = initial_state["total_reward"]
+            steps = helicopter.step_count
+            terminated = initial_state["terminated"]
+            truncated = initial_state["truncated"]
+        if on_state is not None:
+            on_state(helicopter, total_reward, terminated, truncated, final_info)
         if render:
             log_status(f'GUI ready: pilot={helicopter.pilot_mode}; M switches pilot when an agent is available; P pauses/resumes; Esc closes.')
             helicopter.render()
@@ -656,7 +695,7 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
                         manual = not manual
                         helicopter.pilot_mode = 'manual' if manual else 'agent'
                         log_status(f'Pilot: {helicopter.pilot_mode}')
-                    elif key == 't':
+                    elif key == 't' and not replaying:
                         try:
                             raw_obs = helicopter.trim_at_current_position()
                             obs = raw_obs[None, :]
@@ -666,7 +705,7 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
                             retrimmed = True
                         except RuntimeError as error:
                             log_status(str(error))
-                    elif key == 'w':
+                    elif key == 'w' and not replaying:
                         helicopter.toggle_wind()
                     elif key == 'p':
                         helicopter.paused = not helicopter.paused
@@ -678,6 +717,8 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
                         total_reward = 0.0
                         steps = 0
                         final_info = {}
+                        initial_state = None
+                        terminated = truncated = False
                         control_keys.clear()
                     elif manual:
                         control_keys.append(key)
@@ -687,11 +728,13 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
                     helicopter.heli_dyn.action = np.clip(
                         helicopter.heli_dyn.action + delta,
                         helicopter.action_space.low, helicopter.action_space.high)
-                if helicopter.paused or retrimmed:
+                if helicopter.paused or retrimmed or terminated or truncated:
                     helicopter.render()
                     continue
             start = time.perf_counter()
-            if manual:
+            if replaying:
+                action = replay_actions[steps]
+            elif manual:
                 action = helicopter.heli_dyn.action.copy()
             else:
                 predicted, _ = model.predict(obs, deterministic=True)
@@ -700,8 +743,15 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
             raw_obs, reward, terminated, truncated, final_info = raw_env.step(action)
             total_reward += float(reward)
             steps += 1
+            if replaying and steps == len(replay_actions) and not (terminated or truncated):
+                replaying = False
+                manual = True
+                helicopter.pilot_mode = 'manual'
+                log_status('Recording exhausted. Manual control enabled.')
             if on_step is not None:
                 on_step(steps, helicopter.previous_action, raw_obs)
+            if on_state is not None:
+                on_state(helicopter, total_reward, terminated, truncated, final_info)
             if render:
                 helicopter.render()
             if terminated or truncated:
@@ -711,11 +761,119 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
                 obs = env.normalize_obs(obs)
             if render:
                 time.sleep(max(0.0, DT - (time.perf_counter() - start)))
+        reasons = episode_end_reasons(final_info, terminated, truncated, render)
+        if initial_state is not None and (terminated or truncated) and not final_info:
+            reasons = initial_state["termination_reasons"]
         return dict(seed=seed, steps=steps, reward=total_reward,
                     terminated=bool(terminated), truncated=bool(truncated),
-                    termination_reasons=episode_end_reasons(final_info, terminated, truncated, render))
+                    termination_reasons=reasons)
     finally:
         env.close()
+
+
+def read_replay_actions(directory):
+    """Read and validate the step order and applied controls in a recording."""
+    import numpy as np
+    from heligym.envs.helicopter import Heli
+
+    path = directory / 'actions.csv'
+    with path.open(newline='') as stream:
+        rows = csv.reader(stream, strict=True)
+        if next(rows, None) != ['step', *Heli.action_names]:
+            raise ValueError(f'{path}: unexpected action columns')
+        actions = []
+        for step, row in enumerate(rows, 1):
+            try:
+                if len(row) != len(Heli.action_names) + 1 or int(row[0]) != step:
+                    raise ValueError('expected consecutive steps starting at 1 and four controls')
+                values = [float(value) for value in row[1:]]
+                if not all(math.isfinite(value) and -1 <= value <= 1 for value in values):
+                    raise ValueError('controls must be finite and lie within [-1, 1]')
+            except ValueError as error:
+                raise ValueError(f'{path}, row {step + 1}: {error}') from error
+            actions.append(values)
+    return np.asarray(actions, dtype=np.float32).reshape(-1, len(Heli.action_names))
+
+
+def replay_episode(args):
+    """Play recorded commands and compare the resulting raw observations when available."""
+    import numpy as np
+    from heligym.envs.helicopter import Heli
+
+    try:
+        actions = read_replay_actions(args.source_dir)
+    except (OSError, ValueError, csv.Error) as error:
+        raise SystemExit(f'Cannot read replay controls: {error}') from error
+
+    checked = 0
+    first_difference = None
+    observations_path = args.source_dir / 'observations.csv'
+    observations_file = observations_path.open(newline='') if observations_path.is_file() else nullcontext()
+    with observations_file as stream:
+        rows = csv.reader(stream) if stream is not None else None
+        if rows is not None and next(rows, None) != ['step', *Heli.observation_names]:
+            log_status('Recorded observation columns differ from the current layout. Comparison unavailable.')
+            rows = None
+
+        def compare(step, _action, observation):
+            nonlocal rows, checked, first_difference
+            if rows is None or checked > len(actions):
+                return
+            row = next(rows, None)
+            try:
+                if row is None or len(row) != len(observation) + 1 or int(row[0]) != step:
+                    raise ValueError
+                expected = np.asarray(row[1:], dtype=np.float32)
+            except ValueError:
+                log_status(f'Recorded observation at step {step} is missing or invalid. Comparison stopped.')
+                rows = None
+                return
+            if first_difference is None and not np.array_equal(expected, observation):
+                first_difference = step
+            checked += 1
+
+        result = run_episode(None, args, None, args.seed, render=True, on_step=compare,
+                             replay_actions=actions)
+
+    if checked:
+        if first_difference is not None:
+            log_status(f'First observation difference at step {first_difference}.')
+        elif checked == len(actions) + 1:
+            log_status(f'All {checked} recorded observations matched exactly.')
+        else:
+            log_status(f'First {checked} recorded observations matched exactly.')
+    reasons = ', '.join(result['termination_reasons'])
+    print(f"Replay episode: steps={result['steps']}, return={result['reward']:.3f}, termination={reasons}")
+    return result
+
+
+def load_recorded_state(directory, timestep):
+    """Read one versioned snapshot by step number."""
+    from heligym.envs.episode_state import STATE_FORMAT_VERSION
+
+    path = directory / 'states.json'
+    data = json.loads(path.read_text())
+    if data['version'] != STATE_FORMAT_VERSION:
+        raise ValueError(f'{path}: unsupported snapshot format version {data["version"]}')
+    states = data['states']
+    if not 0 <= timestep < len(states) or states[timestep]['step'] != timestep:
+        raise ValueError(f'{path}: no saved timestep {timestep}; available steps are 0–{len(states) - 1}')
+    return states[timestep]
+
+
+def reload_episode(args):
+    try:
+        snapshot = load_recorded_state(args.source_dir, args.timestep)
+        if snapshot['terminated'] or snapshot['truncated']:
+            log_status(f'Loading terminal step {args.timestep}. Press R to start a new episode.')
+        else:
+            log_status(f'Loading step {args.timestep} paused. Press P to resume in manual mode.')
+        result = run_episode(None, args, None, args.seed, render=True, initial_state=snapshot)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SystemExit(f'Cannot reload recording: {error}') from error
+    reasons = ', '.join(result['termination_reasons'])
+    print(f"Reloaded episode: steps={result['steps']}, return={result['reward']:.3f}, termination={reasons}")
+    return result
 
 
 def evaluate(model, args, normalization_path):
@@ -726,7 +884,7 @@ def evaluate(model, args, normalization_path):
     episodes = []
     for index in range(args.eval_episodes):
         result = run_episode(None if args.manual else model, args, normalization_path,
-                             args.seed + args.n_envs + index)
+                             args.evaluation_seed + index)
         episodes.append(result)
         print(f"Evaluation {index + 1}/{args.eval_episodes}: "
               f"steps={result['steps']}, return={result['reward']:.3f}")
@@ -810,8 +968,9 @@ def record_episode(model, args, normalization_path, seed=None, directory=None):
     args.target_dir.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=args.target_dir, prefix='.record-') as temporary:
         staging = Path(temporary)
-        with (staging / 'actions.csv').open('w', newline='') as actions_file, \
-                (staging / 'observations.csv').open('w', newline='') as observations_file:
+        with ExitStack() as files:
+            actions_file = files.enter_context((staging / 'actions.csv').open('w', newline=''))
+            observations_file = files.enter_context((staging / 'observations.csv').open('w', newline=''))
             actions = csv.writer(actions_file)
             observations = csv.writer(observations_file)
             actions.writerow(('step', *Heli.action_names))
@@ -822,7 +981,29 @@ def record_episode(model, args, normalization_path, seed=None, directory=None):
                     actions.writerow((step, *action))
                 observations.writerow((step, *observation))
 
-            summary = run_episode(model, args, normalization_path, seed, on_step=write_step)
+            on_state = None
+            if args.full_state:
+                from heligym.envs.episode_state import STATE_FORMAT_VERSION, capture_episode_state
+
+                states = files.enter_context((staging / 'states.json').open('w'))
+                states.write(f'{{"version": {STATE_FORMAT_VERSION}, "states": [\n')
+
+                def on_state(env, total_reward, terminated, truncated, info):
+                    if env.step_count:
+                        states.write(',\n')
+                    snapshot = {
+                        'step': env.step_count, 'total_reward': total_reward,
+                        'terminated': bool(terminated), 'truncated': bool(truncated),
+                        'termination_reasons': episode_end_reasons(
+                            info, terminated, truncated) if terminated or truncated else [],
+                        'state': capture_episode_state(env),
+                    }
+                    states.write(json.dumps(snapshot, allow_nan=False, separators=(',', ':')))
+
+            summary = run_episode(model, args, normalization_path, seed,
+                                  on_step=write_step, on_state=on_state)
+            if args.full_state:
+                states.write('\n]}\n')
 
         config = {key: str(value) if isinstance(value, Path) else value
                   for key, value in vars(args).items()}
@@ -837,12 +1018,16 @@ def record_episode(model, args, normalization_path, seed=None, directory=None):
         write_json(staging / 'config.json', config)
         write_json(staging / 'summary.json', summary)
         filenames = ['actions.csv', 'observations.csv', 'config.json']
+        if args.full_state:
+            filenames.append('states.json')
         if args.record_plot:
             plot_recording(staging, DT, Heli.action_names, Heli.observation_names, config)
             filenames.append('figure.png')
         directory.mkdir(parents=True, exist_ok=True)
         if not args.record_plot:
             (directory / 'figure.png').unlink(missing_ok=True)
+        if not args.full_state:
+            (directory / 'states.json').unlink(missing_ok=True)
         for name in (*filenames, 'summary.json'):
             (staging / name).replace(directory / name)
     log_status(f"Recorded {summary['steps']} steps to {directory.resolve()}")
@@ -919,10 +1104,9 @@ def train(algorithm, args):
               for key, value in vars(args).items()}
     config['flip_angle_reference'] = 'upright'
     config['saved_at'] = saved_at()
-    wind_speed, wind_direction = run_wind(args, args.seed)
     factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
-                      no_wind=args.no_wind, wind_speed=wind_speed,
-                      wind_direction=wind_direction, turbulence_level=args.turbulence_level, flip_angle=args.flip_angle,
+                      no_wind=args.no_wind, wind_speed=args.wind_speed,
+                      wind_direction=args.wind_direction, random_wind=args.random_wind, turbulence_level=args.turbulence_level, flip_angle=args.flip_angle,
                       smoothness_weight=args.smoothness_weight, continual=args.continual,
                       tolerances={key: getattr(args, key) for key in TOLERANCE_OPTIONS
                                   if getattr(args, key) is not None})
@@ -1001,7 +1185,9 @@ def load_model(algorithm, args):
 
 def print_run_summary(args):
     """Show the settings most useful for the selected commands."""
-    lines = ['Run settings', f'  Output       {args.target_dir}']
+    location = (f'  Source       {args.source_dir}' if {'replay', 'reload'}.intersection(args.commands)
+                else f'  Output       {args.target_dir}')
+    lines = ['Run settings', location]
     if any(command != 'plot' for command in args.commands):
         wind = 'off' if args.no_wind else 'randomized' if args.random_wind else 'on'
         lines.extend([
@@ -1050,7 +1236,7 @@ def main(argv=None):
         args.commands.remove('tune')
     # Configure native paths before importing any heavy packages. The bootstrap
     # may restart Python once; headless commands do not need it.
-    if 'render' in args.commands:
+    if {'render', 'replay', 'reload'}.intersection(args.commands):
         with progress('Preparing renderer library paths', multiline=True):
             prepare_renderer()
 
@@ -1085,9 +1271,13 @@ def main(argv=None):
                                            seed=args.record_seed + index, directory=directory)
                 else:
                     result = run_episode(None if args.manual else model, args, normalization_path,
-                                         args.seed + args.n_envs, render=True)
+                                         args.evaluation_seed, render=True)
                     reasons = "; ".join(result.get("termination_reasons", ["unspecified"]))
                     print(f"Rendered episode: steps={result['steps']}, return={result['reward']:.3f}, termination={reasons}")
+            elif command == 'replay':
+                replay_episode(args)
+            elif command == 'reload':
+                reload_episode(args)
             elif command == 'plot':
                 plot_statistics(args.target_dir)
 

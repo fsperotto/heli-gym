@@ -43,7 +43,7 @@ class HeliRenderTests(unittest.TestCase):
         )
         self.native.rotate_model.assert_called_once_with("helicopter", 0.5, 0.6, 0.7)
         self.native.update_helicopter_camera.assert_called_once_with(
-            10.0 * FT2MTR, 20.0 * FT2MTR, -30.0 * FT2MTR, 0.7
+            10.0 * FT2MTR, 20.0 * FT2MTR, -30.0 * FT2MTR, 0.7, 0.5, 0.6
         )
         self.native.show_window.assert_called_once()
         self.native.render.assert_called_once()
@@ -113,6 +113,10 @@ class HeliRenderTests(unittest.TestCase):
         values = self.renderer.command_values
         self.renderer.render(self.state, self.observation, self.action, pilot_mode='agent')
         self.assertEqual(values[0], 1.)
+        self.native.set_guiText_row_count.assert_called_with(
+            self.renderer.command_id, self.renderer.common_command_rows)
+        self.renderer.render(self.state, self.observation, self.action, pilot_mode='replay')
+        self.assertEqual(values[0], 2.)
         self.native.set_guiText_row_count.assert_called_with(
             self.renderer.command_id, self.renderer.common_command_rows)
         self.renderer.render(self.state, self.observation, self.action, pilot_mode='manual')

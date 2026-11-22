@@ -33,8 +33,8 @@ def run_candidate(args, directory, params, train_seed, eval_seed, timesteps):
         train.extend([f"--{name.replace('_', '-')}", str(value)])
     subprocess.run(train, check=True)
 
-    # main.py offsets evaluation seeds by n_envs and samples wind per episode.
-    subprocess.run([*common, "eval", "--seed", str(eval_seed - args.n_envs),
+    # An explicit evaluation seed starts the sequence directly.
+    subprocess.run([*common, "eval", "--seed", str(eval_seed),
                     "--eval-episodes", str(args.eval_episodes)], check=True)
     return json.loads((directory / "evaluation.json").read_text())["mean_reward"]
 

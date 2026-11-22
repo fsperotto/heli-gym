@@ -43,6 +43,7 @@ class KeyboardControlsTests(unittest.TestCase):
         )
         self.env.task_target = {}
         self.env.recent_yaw_turns = 0.0
+        self.env.random_wind = False
         self.env.previous_action = np.zeros(4, dtype=np.float32)
         self.env.renderer = Mock()
 

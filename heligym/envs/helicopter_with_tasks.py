@@ -136,9 +136,9 @@ class HeliGoto(ApproximateTargetValues):
         low = np.maximum(current[:2] - self.target_horizontal_range, -bounds + 1.)
         high = np.minimum(current[:2] + self.target_horizontal_range, bounds - 1.)
         for _ in range(100):
-            north, east = self.np_random.uniform(low, high)
+            north, east = self._waypoint_rng.uniform(low, high)
             ground = self.heli_dyn.ground_height_at(north, east)
-            altitude = max(current[2] + self.np_random.uniform(
+            altitude = max(current[2] + self._waypoint_rng.uniform(
                 -self.target_altitude_range, self.target_altitude_range),
                 ground + self.target_ground_clearance)
             if not self._waypoint_reached(np.array([north, east, altitude]) - current):

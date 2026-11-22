@@ -24,6 +24,7 @@ class HeliRender:
             f"/resources/shaders/{heli_name}_frag.fs",
         )
         self.native.add_permanent_object_to_window(self.helicopter)
+        self.native.set_pilot_view(self.helicopter)
         self.terrain = self.native.create_model(
             "/resources/models/terrain/terrain.obj",
             "/resources/shaders/terrain_vertex.vs",
@@ -86,14 +87,14 @@ class HeliRender:
             "PEDAL      : %6.3f",
         ]
         self.command_text = [
-            "AGENT PILOT: %.0f (0 manual, 1 agent)",
+            "PILOT MODE : %.0f (0 manual, 1 agent, 2 replay)",
             "M          : Switch agent / manual (if available)",
             "P          : Pause / resume",
             "T          : Stop and trim at current position",
             "W          : Enable / disable wind",
             "H          : Hide / show info panels",
             "Esc        : Stop and close window",
-            "V          : Switch fixed / chase view",
+            "V          : Cycle fixed / chase / pilot view",
         ]
         self.common_command_rows = len(self.command_text)
         self.command_text += [
@@ -163,8 +164,8 @@ class HeliRender:
             self.native.add_instantanous_object_to_window(self.target_marker)
 
         self.native.set_guiText_row_count(
-            self.command_id, self.common_command_rows if pilot_mode == 'agent' else -1)
-        self.command_values[0] = float(pilot_mode == 'agent')
+            self.command_id, -1 if pilot_mode == 'manual' else self.common_command_rows)
+        self.command_values[0] = {'manual': 0., 'agent': 1., 'replay': 2.}[pilot_mode]
         self.native.set_guiText(self.command_id, self.command_text, self.command_values)
         self.info_values[:-1] = observation
         self.info_values[-1] = recent_yaw_turns
@@ -199,7 +200,7 @@ class HeliRender:
             state["xyz"][0] * FT2MTR,
             state["xyz"][1] * FT2MTR,
             state["xyz"][2] * FT2MTR,
-            state["euler"][2],
+            state["euler"][2], state["euler"][0], state["euler"][1],
         )
         if not self.native.is_visible():
             self.native.show_window()

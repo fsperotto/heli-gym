@@ -1,4 +1,6 @@
 #include "gWindow.h"
+#include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 
 Window::Window(const unsigned int SCR_WIDTH,
@@ -157,7 +159,12 @@ void Window::render()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);                
        
         // Get procection matrix.
-        glm::mat4 projection = glm::perspective(glm::radians(this->camera->Zoom), (float)this->SCR_WIDTH / (float)this->SCR_HEIGHT, 0.1f, 10000.0f);
+        const bool pilot = this->camera_mode == CameraMode::Pilot;
+        const float fov = pilot ? 50.0f : this->camera->Zoom;
+        glm::mat4 projection = glm::perspective(glm::radians(fov),
+            static_cast<float>(this->SCR_WIDTH) / this->SCR_HEIGHT, 0.1f, 10000.0f);
+        if (pilot)
+            projection[2][1] = -0.4f;  // Place the forward axis in the windscreen above the panel.
 
         // Camera/view transformation.
         glm::mat4 view = this->camera->GetViewMatrix();
@@ -252,6 +259,7 @@ void Window::renderGUI()
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+    this->render_cockpit();
 
     for (int s = 0; s < this->v_guiTextSection.size() && this->show_info; s++)
     {
@@ -307,7 +315,9 @@ void Window::static_key_callback(GLFWwindow* window, int key, int scancode, int 
             owner->show_info = !owner->show_info;
             break;
         case GLFW_KEY_V:
-            owner->follow_helicopter_bearing = !owner->follow_helicopter_bearing;
+            owner->camera_mode = owner->camera_mode == CameraMode::Fixed ? CameraMode::Chase
+                               : owner->camera_mode == CameraMode::Chase ? CameraMode::Pilot
+                               : CameraMode::Fixed;
             break;
         case GLFW_KEY_T: case GLFW_KEY_W: case GLFW_KEY_M: case GLFW_KEY_P: case GLFW_KEY_R: case GLFW_KEY_X: case GLFW_KEY_Z: case GLFW_KEY_S:
         case GLFW_KEY_Q: case GLFW_KEY_D:
@@ -319,12 +329,28 @@ void Window::static_key_callback(GLFWwindow* window, int key, int scancode, int 
     }
 }
 
-void Window::update_helicopter_camera(float north, float east, float down, float bearing)
+void Window::update_helicopter_camera(float north, float east, float down, float bearing,
+                                       float roll, float pitch)
 {
     // Convert the simulator's NED coordinates to OpenGL's X-up-Z frame.
     const glm::vec3 helicopter(north, -down, east);
+    if (this->camera_mode == CameraMode::Pilot)
+    {
+        // Match the model's yaw, pitch and roll in OpenGL (north, up, east).
+        glm::mat4 body_to_world = glm::rotate(glm::mat4(1.0f), -bearing, glm::vec3(0, 1, 0));
+        body_to_world = glm::rotate(body_to_world, pitch, glm::vec3(0, 0, 1));
+        body_to_world = glm::rotate(body_to_world, roll, glm::vec3(1, 0, 0));
+        const glm::mat3 rotation(body_to_world);
+        // Metres from the model origin, forward and up on the cockpit centreline.
+        this->camera->Position = helicopter + rotation * glm::vec3(1.6f, 0.65f, 0.0f);
+        this->camera->Front = rotation[0];
+        this->camera->Up = rotation[1];
+        this->camera->Right = rotation[2];
+        return;
+    }
+
     glm::vec3 position;
-    if (this->follow_helicopter_bearing)
+    if (this->camera_mode == CameraMode::Chase)
     {
         const glm::vec3 heading(cos(bearing), 0.0f, sin(bearing));
         position = helicopter - 30.0f * heading + glm::vec3(0.0f, 8.0f, 0.0f);
@@ -339,6 +365,40 @@ void Window::update_helicopter_camera(float north, float east, float down, float
     this->camera->Front = front;
     this->camera->Right = glm::normalize(glm::cross(front, this->camera->WorldUp));
     this->camera->Up = glm::normalize(glm::cross(this->camera->Right, front));
+}
+
+void Window::set_helicopter_cockpit(Model* model, const unsigned char* rgba,
+                                     unsigned int width, unsigned int height)
+{
+    this->pilot_helicopter = model;
+    this->cockpit_size = ImVec2(static_cast<float>(width), static_cast<float>(height));
+    if (!this->cockpit_texture)
+        glGenTextures(1, &this->cockpit_texture);
+
+    GLint previous_texture;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previous_texture);
+    glBindTexture(GL_TEXTURE_2D, this->cockpit_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glBindTexture(GL_TEXTURE_2D, previous_texture);
+}
+
+void Window::render_cockpit()
+{
+    if (this->camera_mode != CameraMode::Pilot || !this->cockpit_texture)
+        return;
+
+    // Cover the viewport while preserving the cockpit image's aspect ratio.
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float scale = std::max(display.x / this->cockpit_size.x, display.y / this->cockpit_size.y);
+    const ImVec2 size(this->cockpit_size.x * scale, this->cockpit_size.y * scale);
+    const ImVec2 start((display.x - size.x) * 0.5f, (display.y - size.y) * 0.5f);
+    const ImVec2 end(start.x + size.x, start.y + size.y);
+    ImGui::GetBackgroundDrawList()->AddImage(
+        reinterpret_cast<ImTextureID>(static_cast<std::uintptr_t>(this->cockpit_texture)), start, end);
 }
 
 void Window::render_control_bars()
@@ -427,7 +487,8 @@ void Window::mouse_callback(GLFWwindow* window, double xpos, double ypos)
     lastY = (float)ypos;
 
     // If left mouse button pressed, change the camera angles.
-    if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+    if (this->camera_mode != CameraMode::Pilot &&
+        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
     {
         this->camera->ProcessMouseMovement(-this->xoffset, -this->yoffset);
     }       
@@ -436,7 +497,8 @@ void Window::mouse_callback(GLFWwindow* window, double xpos, double ypos)
 
 void Window::scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
-    this->camera->ProcessMouseScroll((float)yoffset);
+    if (this->camera_mode != CameraMode::Pilot)
+        this->camera->ProcessMouseScroll((float)yoffset);
 }
 
 
@@ -476,7 +538,8 @@ void Window::draw()
 {
 	for (int i = 0; i < this->permanent_drawables.size(); i++)
 	{
-		this->permanent_drawables[i]->draw();
+		if (this->camera_mode != CameraMode::Pilot || this->permanent_drawables[i] != this->pilot_helicopter)
+            this->permanent_drawables[i]->draw();
 	}
 
 	for (int i = 0; i < this->instantaneous_drawables.size(); i++)
@@ -525,6 +588,11 @@ void Window::set_guiText_row_count(int section, int count)
 void Window::shutdown_gui()
 {
     if (!this->gui_initialized) return;
+    if (this->cockpit_texture)
+    {
+        glDeleteTextures(1, &this->cockpit_texture);
+        this->cockpit_texture = 0;
+    }
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

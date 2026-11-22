@@ -63,6 +63,11 @@ private:
     std::vector<Model*> permanent_drawables;
 	std::vector<Model*> instantaneous_drawables;
 
+    Model* pilot_helicopter = nullptr;
+    unsigned int cockpit_texture = 0;
+    ImVec2 cockpit_size;
+    void render_cockpit();
+
     // Drawing of window which called by render function.
     void draw();
 
@@ -86,8 +91,12 @@ public:
     bool gui_initialized = false;
     void shutdown_gui();
     bool show_info = true;
-    bool follow_helicopter_bearing = false;
-    void update_helicopter_camera(float north, float east, float down, float bearing);
+    enum class CameraMode { Fixed, Chase, Pilot };
+    CameraMode camera_mode = CameraMode::Fixed;
+    void update_helicopter_camera(float north, float east, float down, float bearing,
+                                  float roll = 0.0f, float pitch = 0.0f);
+    void set_helicopter_cockpit(Model* model, const unsigned char* rgba,
+                                unsigned int width, unsigned int height);
 
     // FPS variables and dt which is in nanoseconds.
     float FPS = (float)1e-7;

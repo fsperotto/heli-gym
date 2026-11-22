@@ -31,6 +31,9 @@ class RendererBindingTests(unittest.TestCase):
         self.lib.pop_key_press.return_value = -1
         b.get_key_presses(1)
         b.update_helicopter_camera(1, 0, 0, 0, 0)
+        with patch.object(self.lib, 'update_helicopter_pose', None):
+            b.update_helicopter_camera(1, 0, 0, 0, 0)
+        b.set_helicopter_cockpit(1, 2, np.zeros((3, 4, 4), dtype=np.uint8))
         b.add_guiText(1, 0, ['value %.2f'], [0.])
         b.set_guiText(1, 0, ['value %.2f'], [0.])
         b.set_guiText_row_count(1, 0, -1)
@@ -39,7 +42,8 @@ class RendererBindingTests(unittest.TestCase):
                  'Model*': ctypes.c_void_p, 'float*': ctypes.POINTER(ctypes.c_float),
                  'bool': ctypes.c_bool, 'float': ctypes.c_float, 'int': ctypes.c_int,
                  'unsigned int': ctypes.c_uint, 'char*': ctypes.c_char_p,
-                 'char**': ctypes.POINTER(ctypes.c_char_p)}
+                 'char**': ctypes.POINTER(ctypes.c_char_p),
+                 'unsigned char*': ctypes.POINTER(ctypes.c_ubyte)}
         for result_type, name, arguments in re.findall(
                 r'extern "C" RENDERER_API\s+([\w]+\s*\*?)\s+(\w+)\((.*?)\);', header, re.S):
             with self.subTest(function=name):

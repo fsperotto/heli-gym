@@ -70,6 +70,13 @@ extern "C" RENDERER_API void set_camera_pos(Camera* camera, float x, float y, fl
 extern "C" RENDERER_API void update_helicopter_camera(Window* window, float north, float east,
 											float down, float bearing);
 
+// Supply the full helicopter attitude and cockpit overlay for pilot view.
+extern "C" RENDERER_API void update_helicopter_pose(Window* window, float north, float east,
+                                                   float down, float bearing, float roll, float pitch);
+extern "C" RENDERER_API void set_helicopter_cockpit(Window* window, Model* model,
+                                                    const unsigned char* rgba,
+                                                    unsigned int width, unsigned int height);
+
 // Get camera position as float array.
 extern "C" RENDERER_API float* get_camera_pos(Camera * camera);
 

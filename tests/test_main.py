@@ -49,7 +49,8 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(args.n_steps, 1024)
             self.assertEqual(args.net_arch, [128, 64])
             self.assertFalse(args.no_wind)
-            self.assertEqual(main.run_wind(args, 42), main.sample_wind(42, 12.))
+            self.assertTrue(args.random_wind)
+            self.assertEqual(args.wind_speed, 12.)
 
     def test_tuned_parameter_sources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -65,6 +66,14 @@ class CommandTests(unittest.TestCase):
             args = main.parse_args(['tune', 'train', '--target-dir', directory, '--use-tuned'])
             self.assertEqual(args.task, 'smooth-hover')
             self.assertEqual(args.commands, ['tune', 'train'])
+
+    def test_explicit_replay_seed_is_used_directly(self):
+        for command in ('eval', 'render', 'record'):
+            args = main.parse_args([command, '--seed', '123', '--n-envs', '4'])
+            seed = args.record_seed if command == 'record' else args.evaluation_seed
+            self.assertEqual(seed, 123)
+        self.assertEqual(main.parse_args(['train', 'eval', '--seed', '123',
+                                          '--n-envs', '4']).evaluation_seed, 127)
 
     def test_tensorboard_flags(self):
         self.assertFalse(main.parse_args(['train']).tensorboard)

@@ -225,6 +225,18 @@ void update_helicopter_camera(Window* window, float north, float east, float dow
 	window->update_helicopter_camera(north, east, down, bearing);
 }
 
+void update_helicopter_pose(Window* window, float north, float east, float down,
+                            float bearing, float roll, float pitch)
+{
+    window->update_helicopter_camera(north, east, down, bearing, roll, pitch);
+}
+
+void set_helicopter_cockpit(Window* window, Model* model, const unsigned char* rgba,
+                            unsigned int width, unsigned int height)
+{
+    window->set_helicopter_cockpit(model, rgba, width, height);
+}
+
 bool set_guiText_row_count(Window* window, int section, int count)
 {
     if (!window || section < 0 || section >= window->v_guiTextSection.size()) return false;

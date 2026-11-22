@@ -3,6 +3,7 @@ Helicopter control.
 """
 import yaml
 import sys, math
+from random import Random
 import numpy as np
 import os
 import copy
@@ -89,8 +90,9 @@ class Heli(gym.Env, EzPickle):
                  terrain_name: str = "default_terrain",
                  render_mode="human",
                  wind_enabled=True,
-                 wind_direction=DEFAULT_WEATHER["wind_direction"],
+                 wind_direction=None,
                  wind_speed=DEFAULT_WEATHER["wind_speed"],
+                 random_wind=False,
                  turbulence_level=DEFAULT_WEATHER["turbulence_level"],
                  gas_constant=DEFAULT_WEATHER["gas_constant"],
                  sea_level_temperature=DEFAULT_WEATHER["sea_level_temperature"],
@@ -125,6 +127,7 @@ class Heli(gym.Env, EzPickle):
                           wind_enabled=wind_enabled,
                           wind_direction=wind_direction,
                           wind_speed=wind_speed,
+                          random_wind=random_wind,
                           turbulence_level=turbulence_level,
                           gas_constant=gas_constant,
                           sea_level_temperature=sea_level_temperature,
@@ -136,6 +139,10 @@ class Heli(gym.Env, EzPickle):
 
         self.wind_enabled = wind_enabled
         self._configured_wind_speed = wind_speed
+        self._wind_speed_setting = wind_speed
+        self._wind_direction_setting = wind_direction
+        self.random_wind = random_wind
+        self.episode_seed = None
 
         if render_mode not in (None, "human"):
             raise ValueError("render_mode must be None or human")
@@ -168,7 +175,7 @@ class Heli(gym.Env, EzPickle):
         )
         self.wind_dyn = WindDynamics(
             dt=DT,
-            wind_direction=wind_direction,
+            wind_direction=DEFAULT_WEATHER["wind_direction"] if wind_direction is None else wind_direction,
             wind_speed=effective_wind_speed,
             turbulence_level=turbulence_level,
         )
@@ -256,9 +263,8 @@ class Heli(gym.Env, EzPickle):
     def toggle_wind(self):
         """Switch wind in place, preserving configured settings and aircraft state."""
         self.wind_enabled = not self.wind_enabled
-        self.wind_dyn.wind_speed = self._configured_wind_speed if self.wind_enabled else 0.0
-        self.wind_dyn.wind_mean_ned = self.wind_dyn.wind_speed * np.array(
-            [np.cos(self.wind_dyn.wind_dir), np.sin(self.wind_dyn.wind_dir), 0.], dtype=np.float32)
+        speed = self._configured_wind_speed if self.wind_enabled else 0.0
+        self.wind_dyn.set_mean_wind(speed, self.wind_dyn.wind_dir)
         self.wind_dyn.reset()
         self.heli_dyn.set_wind(self.wind_dyn.wind_mean_ned.copy())
 
@@ -435,6 +441,7 @@ class Heli(gym.Env, EzPickle):
             info = {'failed': True, 'successed': False,
                     'time_up': self._is_time_up(), 'numerical_failure': True,
                     'numerical_failure_reason': str(error),
+                    'episode_seed': self.episode_seed,
                     'crash': False, 'flip': False}
             self.previous_action = actions.copy()
             self.current_reward = self.FAILURE_REWARD
@@ -492,16 +499,23 @@ class Heli(gym.Env, EzPickle):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        # Wind dynamics currently draw from NumPy's process-local generator.
-        if seed is not None:
-            np.random.seed(seed)
+        self.episode_seed = int(self.np_random.integers(2**32)) if seed is None else int(seed)
+        self._waypoint_rng = np.random.default_rng(self.episode_seed)
+        if self.random_wind:
+            rng = Random(self.episode_seed)
+            self._configured_wind_speed = rng.uniform(0, self._wind_speed_setting)
+            direction = self._wind_direction_setting
+            if direction is None:
+                direction = rng.uniform(0, 360)
+            speed = self._configured_wind_speed if self.wind_enabled else 0.0
+            self.wind_dyn.set_mean_wind(speed, direction * D2R)
         self.paused = False
         self.time_counter = 0
         self.step_count = 0
         self.current_reward = 0.0
         self.successed_time = 0
         self.recent_yaw_turns = 0.0
-        self.wind_dyn.reset()
+        self.wind_dyn.reset(seed=self.episode_seed)
         # Trim in the same mean wind as on construction, never in the previous
         # episode's instantaneous turbulence (which may have diverged).
         self.heli_dyn.set_wind(self.wind_dyn.wind_mean_ned.copy())
@@ -516,6 +530,7 @@ class Heli(gym.Env, EzPickle):
         failed = self._is_failed()
         return {
             'failed': failed,
+            'episode_seed': self.episode_seed,
             'crash': self._is_crashed(),
             'flip': self._is_flipped(),
             'outside_limits': self._is_outside_limits(),

@@ -2,6 +2,7 @@ from . import pyapi
 import numpy as np
 import os
 import ctypes
+import warnings
 
 class Renderer(object):
     def __init__(self, w = 800, h = 600, title="heligym-renderer"):
@@ -64,10 +65,19 @@ class Renderer(object):
             return []
         return pyapi.get_key_presses(self.window)
 
-    def update_helicopter_camera(self, north, east, down, bearing):
+    def update_helicopter_camera(self, north, east, down, bearing, roll=0.0, pitch=0.0):
         """Track a NED helicopter pose in the currently selected camera mode."""
         self._ensure_open()
-        pyapi.update_helicopter_camera(self.window, north, east, down, bearing)
+        pyapi.update_helicopter_camera(self.window, north, east, down, bearing, roll, pitch)
+
+    def set_pilot_view(self, helicopter):
+        """Use the shared cockpit artwork for the pilot camera."""
+        self._ensure_open()
+        from .cockpit import cockpit_rgba
+
+        if not pyapi.set_helicopter_cockpit(self.window, helicopter, cockpit_rgba()):
+            warnings.warn('Rebuild the native renderer to enable the pilot view.',
+                          RuntimeWarning, stacklevel=2)
 
     def is_close(self):
         """

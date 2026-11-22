@@ -19,9 +19,8 @@ class WindDynamics(DynamicSystem):
         super(WindDynamics, self).__init__(dt)
         self.eta_norm = 1.0/np.sqrt(dt)
         self.turbulence_level = turbulence_level
-        self.wind_dir = wind_direction*D2R
-        self.wind_speed = wind_speed
-        self.wind_mean_ned = self.wind_speed*np.array([np.cos(self.wind_dir), np.sin(self.wind_dir), 0], dtype=np.float32)
+        self.set_mean_wind(wind_speed, wind_direction * D2R)
+        self._rng = np.random.default_rng()
         self.__register_states()
         self.TEP = LookUpTable(7,12) # Turbulence Exceedence Probability Lookup Table
         self.TEP       << 500.0 << 1750.0 << 3750.0 << 7500.0 << 15000.0 << 25000.0 << 35000.0 << 45000.0 << 55000.0 << 65000.0 << 75000.0 << 80000.0 \
@@ -38,7 +37,14 @@ class WindDynamics(DynamicSystem):
         self._register_state('vs', np.zeros(2, dtype=np.float32)) # States related to v
         self._register_state('ws', np.zeros(2, dtype=np.float32)) # States related to w
 
-    def reset(self):
+    def set_mean_wind(self, speed, direction):
+        self.wind_speed = speed
+        self.wind_dir = direction
+        self.wind_mean_ned = speed * np.array([np.cos(direction), np.sin(direction), 0.], dtype=np.float32)
+
+    def reset(self, *, seed=None):
+        if seed is not None:
+            self._rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
         self.state['us'] = np.zeros(1, dtype=np.float32)
         self.state['vs'] = np.zeros(2, dtype=np.float32)
         self.state['ws'] = np.zeros(2, dtype=np.float32)
@@ -46,7 +52,7 @@ class WindDynamics(DynamicSystem):
     def step_before(self):
         """Randomly generate white noise for turbulence input
         """
-        self.eta = np.random.randn(3)*self.eta_norm
+        self.eta = self._rng.standard_normal(3)*self.eta_norm
 
     def _calc_params(self, h_gr, vel_inf_ned):
         # MIL-HDBK-1797 and MIL-HDBK-1797B
