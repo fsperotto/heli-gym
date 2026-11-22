@@ -1,0 +1,118 @@
+{
+  "episodes": [
+    {
+      "seed": 65,
+      "steps": 709,
+      "reward": -271.7004386395612,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 66,
+      "steps": 681,
+      "reward": -265.04881576525383,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "crash",
+        "flip"
+      ]
+    },
+    {
+      "seed": 67,
+      "steps": 1342,
+      "reward": -487.3492285761002,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 68,
+      "steps": 726,
+      "reward": -269.99559064497043,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 69,
+      "steps": 2764,
+      "reward": -1298.9409552408547,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 70,
+      "steps": 636,
+      "reward": -124.35183997052488,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 71,
+      "steps": 289,
+      "reward": -165.62529525692287,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 72,
+      "steps": 1447,
+      "reward": -941.1391978586192,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 73,
+      "steps": 565,
+      "reward": -250.440339398251,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 74,
+      "steps": 313,
+      "reward": -163.72232268883548,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    }
+  ],
+  "mean_reward": -423.83140240398933,
+  "std_reward": 369.26405078820517,
+  "mean_steps": 947.2,
+  "settings": {
+    "task": "smooth-goto",
+    "algorithm": "ppo",
+    "episode_seconds": 80.0,
+    "no_wind": true,
+    "random_wind": false,
+    "wind_speed": null,
+    "wind_direction": null,
+    "turbulence_level": null
+  }
+}
