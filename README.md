@@ -127,6 +127,20 @@ When the controls run out and the episode is still active, the viewer switches
 to manual control and holds the last applied command. If the episode ends
 earlier, replay stops at that terminal step.
 
+To compare flight models, record a policy episode and then save a replay under a
+different aircraft configuration.
+
+```bash
+python main.py record --target-dir runs/my_run --seed 43
+python main.py replay record --source-dir runs/my_run/record \
+  --heli-name aw109_trekker --target-dir runs/my_run_trekker
+```
+
+The second command runs headlessly, with no policy, and writes fresh observations,
+actions, and a summary to `runs/my_run_trekker/record/`. It stops when the new
+episode ends or the recorded controls run out. Both recordings can be compared
+through their CSV files and figures.
+
 ### Restore a saved timestep
 
 Record with `--full-state` to save a `states.json` in every episode folder.

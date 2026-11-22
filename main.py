@@ -141,6 +141,7 @@ def load_file_args(parser, path, *, saved_run=False, recording=False):
         excluded = {'target_dir', 'pretrained_dir', 'file_args', 'use_tuned', 'tune_dir',
                     'manual', 'summary_only', 'source_dir', 'timestep', 'help'}
         if recording:
+            excluded.add('num_records')
             if 'episode_seed' not in values:
                 parser.error(f'{path}: recording is missing episode_seed')
             values['seed'] = values['episode_seed']
@@ -184,7 +185,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('commands', nargs='*', metavar='COMMAND',
-                        help='tune, train, eval, record, plot, render, or standalone replay/reload')
+                        help='tune, train, eval, record, plot, render, or standalone replay/reload; replay record saves the playback')
     parameter_source = parser.add_mutually_exclusive_group()
     parameter_source.add_argument('--file-args', type=Path,
                         help='JSON defaults such as final_params.json; explicit CLI options override them')
@@ -417,8 +418,8 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     file_defaults = load_file_args(parser, parameter_path) if parameter_path else {}
     if {'replay', 'reload'}.intersection(commands):
         command = 'reload' if 'reload' in commands else 'replay'
-        if commands != [command]:
-            parser.error(f'{command} must be run separately from other commands')
+        if commands != [command] and commands != ['record', 'replay']:
+            parser.error(f'{command} must be run separately, or use replay record to save playback')
         recording_dir = args.source_dir or file_defaults.get('source_dir')
         if recording_dir is None:
             parser.error(f'{command} requires --source-dir')
@@ -477,7 +478,13 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     # Reuse the training configuration for independent evaluation, recording, and rendering.
     # Parsing again preserves explicit CLI overrides, including --algorithm.
     saved_settings = args.target_dir / 'arguments.json'
-    replaying = {'eval', 'record', 'render'}.intersection(commands)
+    recording_replay = commands == ['record', 'replay']
+    if recording_replay:
+        if (args.target_dir / 'record').resolve() == args.source_dir.resolve():
+            parser.error('replay record requires a destination different from --source-dir')
+        if args.num_records is not None:
+            parser.error('replay record takes one recording directory at a time')
+    replaying = set() if recording_replay else {'eval', 'record', 'render'}.intersection(commands)
     if replaying and not {'tune', 'train'}.intersection(commands) and saved_settings.is_file():
         config = json.loads(saved_settings.read_text())
         if config.get('flip_angle') is not None and 'flip_angle_reference' not in config:
@@ -524,7 +531,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     if 'replay' in commands and args.seed < 0:
         parser.error('replay seed must be nonnegative')
     if 'record' in commands:
-        args.record_seed = replay_seed
+        args.record_seed = args.seed if recording_replay else replay_seed
         if args.record_seed < 0 or args.record_seed + (args.num_records or 1) > 2**32:
             parser.error('recording seeds must be in [0, 2**32)')
     args.command_line = shlex.join([sys.executable, "main.py", *argv])
@@ -627,8 +634,8 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
     import numpy as np
     if render and args.manual:
         model = None
-    if model is None and not render:
-        raise ValueError('Evaluation requires an agent')
+    if model is None and not render and replay_actions is None:
+        raise ValueError('Evaluation requires an agent or recorded controls')
     normalize = model is not None and not args.no_online_normalization
     label = 'Creating GUI environment and loading graphics' if render else f'Creating evaluation environment (seed {seed})'
     with progress(label, multiline=render):
@@ -687,6 +694,8 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
             log_status(f'GUI ready: pilot={helicopter.pilot_mode}; M switches pilot when an agent is available; P pauses/resumes; Esc closes.')
             helicopter.render()
         while not render or not helicopter.renderer.is_close():
+            if not render and replay_actions is not None and steps == len(replay_actions):
+                break
             control_keys = []
             retrimmed = False
             if render:
@@ -743,7 +752,7 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
             raw_obs, reward, terminated, truncated, final_info = raw_env.step(action)
             total_reward += float(reward)
             steps += 1
-            if replaying and steps == len(replay_actions) and not (terminated or truncated):
+            if render and replaying and steps == len(replay_actions) and not (terminated or truncated):
                 replaying = False
                 manual = True
                 helicopter.pilot_mode = 'manual'
@@ -764,6 +773,8 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
         reasons = episode_end_reasons(final_info, terminated, truncated, render)
         if initial_state is not None and (terminated or truncated) and not final_info:
             reasons = initial_state["termination_reasons"]
+        if not render and replay_actions is not None and not (terminated or truncated):
+            reasons = ['recorded controls exhausted']
         return dict(seed=seed, steps=steps, reward=total_reward,
                     terminated=bool(terminated), truncated=bool(truncated),
                     termination_reasons=reasons)
@@ -795,7 +806,7 @@ def read_replay_actions(directory):
     return np.asarray(actions, dtype=np.float32).reshape(-1, len(Heli.action_names))
 
 
-def replay_episode(args):
+def replay_episode(args, *, save=False):
     """Play recorded commands and compare the resulting raw observations when available."""
     import numpy as np
     from heligym.envs.helicopter import Heli
@@ -804,6 +815,8 @@ def replay_episode(args):
         actions = read_replay_actions(args.source_dir)
     except (OSError, ValueError, csv.Error) as error:
         raise SystemExit(f'Cannot read replay controls: {error}') from error
+    if save:
+        return record_episode(None, args, None, replay_actions=actions)
 
     checked = 0
     first_difference = None
@@ -906,7 +919,11 @@ def plot_title(heading, settings):
     details = []
     if settings.get('task'):
         details.append(settings['task'])
-    if settings.get('algorithm'):
+    if settings.get('heli_name'):
+        details.append(settings['heli_name'])
+    if settings.get('control_mode') == 'replay':
+        details.append('Recorded controls')
+    elif settings.get('algorithm'):
         details.append(settings['algorithm'].upper())
     if settings.get('episode_seconds') is not None:
         details.append(f"episode limit {settings['episode_seconds']:g} s")
@@ -959,7 +976,7 @@ def plot_recording(directory, timestep, action_names, observation_names, setting
     figure.savefig(directory / 'figure.png', dpi=140)
 
 
-def record_episode(model, args, normalization_path, seed=None, directory=None):
+def record_episode(model, args, normalization_path, seed=None, directory=None, replay_actions=None):
     """Save one seeded evaluation episode with raw observations and applied controls."""
     from heligym.envs.helicopter import DT, Heli
 
@@ -1001,15 +1018,17 @@ def record_episode(model, args, normalization_path, seed=None, directory=None):
                     states.write(json.dumps(snapshot, allow_nan=False, separators=(',', ':')))
 
             summary = run_episode(model, args, normalization_path, seed,
-                                  on_step=write_step, on_state=on_state)
+                                  on_step=write_step, on_state=on_state, replay_actions=replay_actions)
             if args.full_state:
                 states.write('\n]}\n')
 
         config = {key: str(value) if isinstance(value, Path) else value
                   for key, value in vars(args).items()}
         config.update(episode_seed=seed, timestep_seconds=DT, deterministic=True,
-                      model_path=str((args.target_dir / 'model.zip').resolve()),
-                      normalization_path=(None if args.no_online_normalization else
+                      control_mode='agent' if replay_actions is None else 'replay',
+                      model_path=(str((args.target_dir / 'model.zip').resolve())
+                                  if replay_actions is None else None),
+                      normalization_path=(None if replay_actions is not None or args.no_online_normalization else
                                           str(normalization_path.resolve())),
                       flip_angle_reference='upright',
                       saved_at=datetime.now(ZoneInfo('Europe/Paris')).isoformat(timespec='seconds'))
@@ -1206,6 +1225,8 @@ def print_run_summary(args):
     if 'eval' in args.commands:
         lines.append(f'  Evaluation   {args.eval_episodes} episodes')
     if 'record' in args.commands:
+        if 'replay' in args.commands:
+            lines.append(f'  Output       {args.target_dir / "record"}')
         plot = 'with plots' if args.record_plot else 'without plots'
         lines.append(f'  Recording    {args.num_records or 1} episode(s) · seed {args.record_seed} · {plot}')
     print('\n'.join(lines), flush=True)
@@ -1223,7 +1244,8 @@ def main(argv=None):
         return
     if original_command:
         args.command_line = shlex.join(original_command)
-    log_status('Selected commands: ' + ' -> '.join(args.commands))
+    selection = 'replay record' if args.commands == ['record', 'replay'] else ' -> '.join(args.commands)
+    log_status('Selected commands: ' + selection)
     if 'tune' in args.commands:
         from ppo_tuning import tune
         tune(args)
@@ -1234,6 +1256,10 @@ def main(argv=None):
             if original_command:
                 args.command_line = shlex.join(original_command)
         args.commands.remove('tune')
+    if args.commands == ['record', 'replay']:
+        print_run_summary(args)
+        replay_episode(args, save=True)
+        return
     # Configure native paths before importing any heavy packages. The bootstrap
     # may restart Python once; headless commands do not need it.
     if {'render', 'replay', 'reload'}.intersection(args.commands):
