@@ -1,6 +1,7 @@
 from gymnasium.envs.registration import register
 from heligym.envs import Heli, ApproximateTargetValues, HeliHover, HeliForwardFlight, HeliStabilize, HeliRender
 from heligym.envs import HeliSmoothHover, HeliSmoothStabilize, HeliGoto
+from heligym.envs import HeliSmooth, HeliSmoothApproximateTargetValues, HeliSmoothForwardFlight, HeliSmoothGoto
 
 register(
     id='Heli-v0',
@@ -26,7 +27,8 @@ register(
     nondeterministic=False
 )
 
-for task in ('ApproximateTargetValues', 'HeliForwardFlight', 'HeliSmoothStabilize', 'HeliSmoothHover', 'HeliGoto'):
+for task in ('ApproximateTargetValues', 'HeliForwardFlight', 'HeliSmoothStabilize', 'HeliSmoothHover', 'HeliGoto',
+             'HeliSmooth', 'HeliSmoothApproximateTargetValues', 'HeliSmoothForwardFlight', 'HeliSmoothGoto'):
     register(
         id=f'{task}-v0',
         entry_point=f'heligym.envs:{task}',

@@ -1,0 +1,107 @@
+{
+  "episodes": [
+    {
+      "seed": 65,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 66,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 67,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 68,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 69,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 70,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 71,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 72,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 73,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 74,
+      "steps": 502,
+      "reward": -0.007148613532384237,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    }
+  ],
+  "mean_reward": -0.007148613532384236,
+  "std_reward": 8.673617379884035e-19,
+  "mean_steps": 502.0
+}

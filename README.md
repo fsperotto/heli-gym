@@ -143,8 +143,8 @@ distances in feet to the same active target. Defaults are `progress_weight=0.1`
 and `arrival_reward=100`: closing 100 ft yields 10 progress points, while reaching
 the target yields 100 bonus points. Moving at constant distance yields zero
 progress reward; moving away yields a negative reward. There are no separate
-velocity, angular-motion, attitude, or action penalties. On arrival within a 10 ft 3D radius, the
-reward is calculated for the reached target. By default arrival ends the episode
+velocity, angular-motion, attitude, or action penalties. Arrival uses the same horizontal and altitude tolerances as the other tasks.
+The reward is calculated for the reached target. By default arrival ends the episode
 successfully. With `--continual`, the observation instead reports differences
 from a newly sampled waypoint and the episode continues. Targets are sampled within
 ±100 ft north/east and ±50 ft altitude of the current position; altitude is raised
@@ -154,8 +154,9 @@ failure rules and episode time limit still apply. `info` includes `targets_reach
 and the active `target_position` (north, east, altitude).
 
 `HeliGoto` accepts `target_horizontal_range`, `target_altitude_range`,
-`target_radius`, and `target_ground_clearance` constructor settings in feet,
-plus `progress_weight` (nonnegative) and `arrival_reward` (positive).
+and `target_ground_clearance` constructor settings in feet,
+plus `progress_weight` (nonnegative) and `arrival_reward` (positive). An explicit
+`target_radius` in Python selects the legacy spherical arrival check.
 Sampling uses the environment random generator, so `reset(seed=...)` reproduces
 its target sequence. Rendering shows task target values and a translucent cyan 3D marker with dark edges for
 explicit position targets, including hover and goto.
@@ -166,17 +167,22 @@ python main.py train --task goto --target-dir runs/goto
 
 ### Smooth controls
 
-Use `--task smooth-stabilize` or `--task smooth-hover` to add a control
-smoothness cost to the corresponding task. Each step subtracts
-`lambda * mean((action - previous_action)**2 + action**2)`
-over the four normalized, clipped controls. This penalizes both abrupt changes
-and large command magnitudes relative to zero, without a stored trim reference.
-Holding a nonzero command still incurs a magnitude cost. The change term compares
-against the preceding applied action (the reset controls on the first step).
-Each reset starts a new action history. Previous controls are included in the
-observation.
-Set lambda with `--smoothness-weight` in the CLI or `smoothness_weight` in
-the environment constructor. The default is 0.25, and zero recovers the base task reward.
+The CLI offers `smooth-heli`, `smooth-hover`, `smooth-stabilize`,
+`smooth-forward-flight` (alias `smooth-forward`), and `smooth-goto`.
+`HeliSmoothApproximateTargetValues-v0` exposes the configurable tracking task
+with the same penalties through Gymnasium.
+
+Each smooth task subtracts `smoothness_weight` times the sum of:
+
+- Mean squared control changes and magnitudes over the four clipped controls.
+- Squared excess of `abs(recent_yaw_turns)` above 1.
+- Squared relative excess of absolute roll and pitch above the aircraft's
+  `SAFE_ROLL` and `SAFE_PITCH`, checked separately.
+
+Yaw and attitude costs are zero up to their thresholds. The usual flip limits
+still end the episode. Smooth Stabilize uses yaw history for its reward and
+keeps the instantaneous yaw-rate check for success. Set the shared weight
+with `--smoothness-weight` (default 0.25).
 
 ```bash
 python main.py train --task smooth-hover --smoothness-weight 0.1 --target-dir runs/smooth-hover
@@ -211,11 +217,25 @@ per normalized time, taking the linear gradient as zero at zero error.
 
 Stabilize targets zero body velocity (`u`, `v`, `w`) and zero body yaw rate
 (`r`). It charges the normalized yaw-rate error on every step, including steady
-spins in progression or attitude mode. Smooth Stabilize inherits this penalty.
+spins in progression or attitude mode. Smooth Stabilize uses the thresholded yaw-history penalty described above.
 
 Hover captures the initial position on each reset and accepts an explicit `target_altitude`. Forward flight uses fixed-target
 Goto with altitude and forward speed. Goto without a constructor target retains
 its random waypoint and arrival bonus. Pass `continual=True` for successive waypoints.
+
+### Success tolerances
+
+| CLI option | Default | Error checked |
+| --- | --- | --- |
+| `--horizontal-tolerance` | 20 ft | Horizontal distance across the active north and east targets |
+| `--altitude-tolerance` | 10 ft | Absolute altitude error |
+| `--velocity-tolerance` | 5 ft/s | Absolute error per active body velocity component |
+| `--heading-tolerance` | 5° | Shortest angular distance to the heading target |
+| `--yaw-turn-seconds` | Aircraft-derived yaw-rate scale | Absolute yaw-rate error. Specify seconds per revolution to set the limit to `360° / seconds`. |
+
+Only active targets count toward success. The existing reward scales apply
+independently of these thresholds. Goto uses both position tolerances for its
+arrival bonus and still calculates progress using 3D distance.
 
 ## Training settings and artifacts
 
@@ -275,8 +295,8 @@ the window stays responsive while physics is paused. The GUI indicates the pilot
 mode. The episode ends at the configured time limit or a terminal condition.
 
 Use `--manual` to launch a selected task without any policy, saved normalization,
-or training dependencies. Use it with the `render` command. It ignores saved run settings and uses the supplied environment
-options and their defaults. **M** has no effect because no agent is loaded.
+or training dependencies. Use it with the `render` command. With a saved run directory, it reuses the environment settings in
+`arguments.json`. Explicit CLI options override them. **M** has no effect because no agent is loaded.
 
 ```bash
 python main.py render --manual --task goto --continual --episode-seconds 1000
@@ -300,7 +320,10 @@ again. If stationary trim cannot converge or requires controls beyond their
 limits, the prior state is restored and an error is printed. This key works in
 both pilot modes and while paused.
 **H** hides/shows all info panels and control bars (shown initially). Both toggles
-also work while paused. The left column stacks Observations, Wind, then Target differences. The heading difference is displayed in degrees.
+also work while paused. The Observations panel shows the 17 dynamics values
+and recent signed yaw turns. Target differences shows all eight target channels,
+with heading displayed in degrees. Previous applied controls shows the four
+action-history observations. The control bars show the current command.
 Agent mode hides manual flight/reset instructions while retaining shared controls.
 The rendered episode summary includes termination reasons, for example:
 `Rendered episode: steps=659, return=-105.178, termination=flip`.
@@ -318,8 +341,9 @@ shows zero values. These display values are not added to the agent observations.
 
 ## Wind and saved settings
 
-Independent `eval`, `record`, and agent `render` commands reuse the algorithm and environment
-settings in the run's `arguments.json`; explicit CLI options override them.
+Independent `eval`, `record`, and `render` commands reuse the run settings in
+`arguments.json`, including the task, aircraft, and weather. Explicit CLI options
+take precedence.
 For example, `python main.py render --target-dir runs/hover --wind` enables wind
 even if the run was trained with `--no-wind`. These two flags are mutually exclusive.
 Set `--wind-speed` (ft/s), `--wind-direction` (degrees clockwise from north),
@@ -421,7 +445,7 @@ decay with a 10-second time constant. Starting from reset, a steady
 360° turn over 10 seconds gives `+1` or `-1` depending on direction.
 Continuing to turn can take it past that magnitude, and once turning stops
 it decays toward zero. Opposite-direction turns cancel part of the
-accumulated value. This observation carries no separate reward penalty.
+accumulated value. Smooth tasks use this observation to penalize sustained rotation beyond its threshold.
 
 | Num | Obs                | Unit  | Min   | Max    |
 |-----|--------------------|-------|-------|--------|
@@ -493,6 +517,10 @@ where `T = sqrt(D/g)`. The agent observation fields follow the layout above.
 | `HeliStabilize-v0` | `stabilize` | Bring body-frame linear velocity and yaw rate to zero |
 | `HeliSmoothHover-v0` | `smooth-hover` | Hover with a control smoothness penalty |
 | `HeliSmoothStabilize-v0` | `smooth-stabilize` | Stabilize with a control smoothness penalty |
+| `HeliSmooth-v0` | `smooth-heli` | Base dynamics with smooth-flight penalties |
+| `HeliSmoothForwardFlight-v0` | `smooth-forward-flight` or `smooth-forward` | Forward flight with smooth-flight penalties |
+| `HeliSmoothGoto-v0` | `smooth-goto` | Goto with smooth-flight penalties |
+| `HeliSmoothApproximateTargetValues-v0` | | Configurable target tracking with smooth-flight penalties |
 | `HeliGoto-v0` | `goto` | Reach a random waypoint or follow successive waypoints with `--continual` |
 
 The simulator advances at a fixed 50 Hz (0.02 seconds per step). For native

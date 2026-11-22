@@ -1,0 +1,107 @@
+{
+  "episodes": [
+    {
+      "seed": 46,
+      "steps": 93,
+      "reward": -100.46188948965735,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 47,
+      "steps": 88,
+      "reward": -100.40892321699195,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 48,
+      "steps": 90,
+      "reward": -100.44006854626868,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 49,
+      "steps": 91,
+      "reward": -100.44845449096627,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 50,
+      "steps": 89,
+      "reward": -100.43299337393708,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 51,
+      "steps": 89,
+      "reward": -100.4253099626965,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 52,
+      "steps": 93,
+      "reward": -100.47052618364494,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 53,
+      "steps": 91,
+      "reward": -100.45290825764339,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 54,
+      "steps": 88,
+      "reward": -100.41343249546156,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    },
+    {
+      "seed": 55,
+      "steps": 90,
+      "reward": -100.43323169979784,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "flip"
+      ]
+    }
+  ],
+  "mean_reward": -100.43877377170655,
+  "std_reward": 0.01901674564825537,
+  "mean_steps": 90.2
+}

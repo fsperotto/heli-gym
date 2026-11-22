@@ -1,0 +1,107 @@
+# Leonardo AW109 Trekker (civil A109S with Trekker kit), simplified simulation model.
+# Loading case: 3,175 kg maximum gross mass, rounded to 7,000 lb.
+# Values marked "inherited" are baseline AW109 simulation parameters.
+# Published sources
+#   EASA.R.005, issue 26, A109S section III, paragraphs 4, 5 and 12 (rotor diameters, engines, mass):
+#     https://www.easa.europa.eu/en/downloads/7951/en
+#   Leonardo, AW109 Trekker Single Pilot VFR Standard Aircraft, sections 1.1–1.3 (skids and blade counts):
+#     https://www.hellenicparliament.gr/UserFiles/18a4e643-1429-4e6b-a317-d7c6a29adabf/11295038.pdf
+#   Kaan Air Operations Manual Part B, rev. 9, p. 16 (2,100 mm overall skid width):
+#     https://kaanair-depo.online/MANUALS/OPERATIONS/OM-B-AW109-Rev-9%202026-10.pdf
+# The aircraft has two PW207C engines. HP_LOSS is a separate inherited model parameter.
+
+HELI:
+    IDENT       : "AW109_TREKKER"
+    NAME        : "Leonardo AW109 Trekker (A109S)"
+    HP_LOSS     : 90    # [hp] inherited accessory power loss estimate
+    VTRANS      : 50    # [ft/s] inherited downwash transition speed
+    # CG coordinates use the inherited simulator data and loading assumptions.
+    FS_CG       : 132.7 # [in] inherited longitudinal CG
+    WL_CG       : 38.5  # [in] inherited vertical CG
+    WT          : 7000  # [lb] gross weight for the maximum-mass simulation case
+    # Inertia estimate: scale the baseline tensor by 7000/5401 at fixed radii of gyration.
+    IX          : 2061  # [slug-ft^2]
+    IY          : 8763  # [slug-ft^2]
+    IZ          : 8304  # [slug-ft^2]
+    IXZ         : 775   # [slug-ft^2]
+    # Inherited control offsets and travel in the simulator convention.
+    COL_OS      : 6.    # [deg] Collective Offset
+    COL_L       : -2.   # [deg] Collective Low
+    COL_H       : 15.   # [deg] Collective High
+    LON_L       : -12.  # [deg] Lon Cyc Low
+    LON_H       : +12.  # [deg] Lon Cyc High
+    LAT_L       : -10.  # [deg] Lat Cyc Low
+    LAT_H       : +10.  # [deg] Lat Cyc High
+    PED_OS      : 15.   # [deg] Pedal Offset 
+    PED_L       : -15.  # [deg] Pedal Low
+    PED_H       : 15.   # [deg] Pedal High
+
+    MR:  # main rotor with published radius and blade count. Other parameters are inherited.
+        FS     : 132.4 # [in] hub horizontal location in FS-ref station
+        WL     : 98.2 # [in] hub vertical location in FS-ref station
+        IS     : 0.11 # [rad] forward shaft tilt incidence
+        E      : 0.5 # [ft] hinge offset
+        IB     : 212 # [slug/ft^2] Blade flapping inertia
+        R      : 17.76575 # [ft] radius from EASA diameter of 10.83 m
+        A      : 5.8 # [1/rad] Blade lift-curve slope
+        RPM    : 385 # [rpm] inherited fixed-speed approximation
+        CD0    : 0.009 # Blade profile drag coefficient
+        B      : 4 # blade count confirmed by Leonardo
+        C      : 1.1 # [ft] Blade Chord
+        TWST   : -0.105 # [rad] Blade Twist
+        K1     : 0.096 # Blade pitch-flap coupling
+
+    TR:  # tail rotor with published radius and blade count. Other parameters are inherited.
+        FS     : 391 # [in] hub horizontal location in FS-ref station
+        WL     : 70 # [in] hub vertical location in FS-ref station
+        R      : 3.18241 # [ft] radius from EASA diameter of 1.94 m
+        A      : 4.2 # [1/rad] Blade lift-curve slope
+        C      : 0.6525 # [ft] Blade Chord
+        RPM    : 2080 # [rpm] inherited fixed-speed approximation
+        CD0    : 0.009 # Blade profile drag coefficient
+        TWST   : -0.137 # [rad] Blade Twist
+        B      : 2 # blade count confirmed by Leonardo
+
+    FUS:  # inherited fuselage aerodynamic model
+        FS     : 132 # [in] horizontal CP loc. in FS-ref station
+        WL     : 38 # [in] vertical CP loc. in FS-ref station
+        XUU    : -10.8 # [ft^2] parasite
+        YVV    : -167 # [ft^2] sideward
+        ZWW    : -85 # [ft^2] quadratic
+        COR    : 3 # emprical correction for fus. a.c shift magnification
+
+    HT:  # inherited horizontal stabilizer aerodynamic model
+        FS     : 330 # [in] horizontal CP loc. in FS-ref station (0.25 chord)
+        WL     : 54 # [in] vertical CP loc. in FS-ref station
+        ZUU    : 0.4 # [ft^2] profile
+        ZUW    : -34.0 # [ft^2] circulation lift
+        ZMAX   : -22.0 # [ft^2] max. lift
+
+    VT:  # inherited vertical stabilizer aerodynamic model
+        FS     : 380 # [in] horizontal CP loc. in FS-ref station (0.25chord)
+        WL     : 80 # [in] vertical CP loc. in FS-ref station
+        YUU    : 3.3 # [ft^2] profile
+        YUV    : -47 # [ft^2] circulation lift
+        YMAX   : -17 # [ft^2] max. lift
+
+    WN:  # inherited zero-lift wing model
+        FS     : 0. # [in] horizontal CP loc. in FS-ref station
+        WL     : 0. # [in] vertical CP loc. in FS-ref station
+        ZUU    : 0. # [ft^2] profile
+        ZUW    : 0. # [ft^2] circulatio lift
+        ZMAX   : 0. # [ft^2] max. lift
+        B      : 1 # [ft] wing span
+
+    LG:  # fixed skids approximated by the simulator's existing gear contact points
+        K      : 30000 # [lb/ft] inherited contact stiffness
+        C      : 2000 # [lb*s/ft] inherited contact damping
+        BL_MN  : 41.34 # [in] lateral contact estimate, half the 2,100 mm overall skid width
+        FS_MN  : 187 # [in] inherited longitudinal station for paired contacts
+        FS_N   : 40 # [in] inherited longitudinal station for the forward contact
+        WL     : -22 # [in] inherited contact waterline
+
+    OP:   # inherited simulation attitude thresholds
+        SAFE_ROLL :  30.0  # [deg] nominal absolute roll threshold
+        MAX_ROLL :   60.0  # [deg] maximum absolute roll threshold
+        SAFE_PITCH : 15.0  # [deg] nominal absolute pitch threshold
+        MAX_PITCH :   25.0  # [deg] maximum absolute pitch threshold

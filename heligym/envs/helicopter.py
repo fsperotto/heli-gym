@@ -371,6 +371,8 @@ class Heli(gym.Env, EzPickle):
             target=self._task_observation(),
             target_position=self._render_target_position(),
             pilot_mode=self.pilot_mode,
+            recent_yaw_turns=self.recent_yaw_turns,
+            previous_action=self.previous_action,
         )
         
     def close(self):
@@ -397,6 +399,7 @@ class Heli(gym.Env, EzPickle):
         previous_obs = np.copy(self.heli_dyn.observation)
         previous_state = self.heli_dyn.state.val.copy()
         previous_dots = self.heli_dyn.state_dots.val.copy()
+        previous_yaw_turns = self.recent_yaw_turns
         try:
             # Raise at the first bad numerical operation, before NaNs reach
             # terrain indexing. Underflow is harmless and remains permitted.
@@ -411,6 +414,9 @@ class Heli(gym.Env, EzPickle):
                     raise FloatingPointError("Non-finite helicopter dynamics")
                 if self.need_normalized_state:
                     self._set_normalized_state()
+                yaw_rate = float(self.heli_dyn.state['pqr'][2])
+                self.recent_yaw_turns = (_RECENT_YAW_ALPHA * self.recent_yaw_turns
+                                         + (1 - _RECENT_YAW_ALPHA) * yaw_rate / _RECENT_YAW_BETA)
                 info = self._get_info()
                 if info['crash'] or info['flip']:
                     reward, successed_step = self.FAILURE_REWARD, False
@@ -425,6 +431,7 @@ class Heli(gym.Env, EzPickle):
             self.heli_dyn.state.val[:] = previous_state
             self.heli_dyn.state_dots.val[:] = previous_dots
             self.heli_dyn.observation = previous_obs.copy()
+            self.recent_yaw_turns = previous_yaw_turns
             info = {'failed': True, 'successed': False,
                     'time_up': self._is_time_up(), 'numerical_failure': True,
                     'numerical_failure_reason': str(error),
@@ -432,9 +439,6 @@ class Heli(gym.Env, EzPickle):
             self.previous_action = actions.copy()
             self.current_reward = self.FAILURE_REWARD
             return self._agent_observation(previous_obs), self.current_reward, True, False, info
-        yaw_rate = float(self.heli_dyn.state['pqr'][2])
-        self.recent_yaw_turns = (_RECENT_YAW_ALPHA * self.recent_yaw_turns
-                                 + (1 - _RECENT_YAW_ALPHA) * yaw_rate / _RECENT_YAW_BETA)
         terminated = info['failed'] or info['successed']
         truncated = info['time_up']
         self.successed_time += DT if successed_step else 0

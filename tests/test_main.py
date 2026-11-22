@@ -118,7 +118,8 @@ class CommandTests(unittest.TestCase):
             path = Path(directory)
             main.write_json(path / 'arguments.json', dict(algorithm='sac', task='heli',
                             no_online_normalization=True, no_wind=True, wind_speed=12,
-                            wind_direction=90, turbulence_level=3, episode_seconds=2, commands=['train']))
+                            wind_direction=90, turbulence_level=3, episode_seconds=2,
+                            device='cpu', eval_episodes=4, commands=['train']))
             args = main.parse_args(['eval', '--target-dir', directory])
             self.assertEqual(args.algorithm, 'sac')
             self.assertEqual(args.task, 'heli')
@@ -126,6 +127,10 @@ class CommandTests(unittest.TestCase):
             self.assertTrue(args.no_wind)
             self.assertEqual((args.wind_speed, args.wind_direction, args.turbulence_level), (12, 90, 3))
             self.assertEqual(args.commands, ['eval'])
+            self.assertEqual((args.device, args.eval_episodes), ('cpu', 4))
+            args = main.parse_args(['render', '--manual', '--target-dir', directory])
+            self.assertEqual((args.task, args.episode_seconds, args.wind_speed), ('heli', 2, 12))
+            self.assertTrue(args.manual)
             args = main.parse_args(['render', '--target-dir', directory,
                                     '--algorithm', 'ppo', '--episode-seconds', '3', '--wind',
                                     '--wind-speed', '20', '--wind-direction', '180', '--turbulence-level', '4'])

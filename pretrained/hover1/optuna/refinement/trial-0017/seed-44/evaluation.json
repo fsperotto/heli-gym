@@ -1,0 +1,107 @@
+{
+  "episodes": [
+    {
+      "seed": 56,
+      "steps": 2000,
+      "reward": -14.018310070037842,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 57,
+      "steps": 2000,
+      "reward": -14.37953821818034,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 58,
+      "steps": 2000,
+      "reward": -11.330232196384006,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 59,
+      "steps": 2000,
+      "reward": -14.057092666625977,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 60,
+      "steps": 2000,
+      "reward": -10.767610443962946,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 61,
+      "steps": 2000,
+      "reward": -10.855279978778627,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 62,
+      "steps": 2000,
+      "reward": -15.397145377265083,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 63,
+      "steps": 2000,
+      "reward": -16.537003835042317,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 64,
+      "steps": 2000,
+      "reward": -9.21303833855523,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    },
+    {
+      "seed": 65,
+      "steps": 2000,
+      "reward": -11.032321718004015,
+      "terminated": false,
+      "truncated": true,
+      "termination_reasons": [
+        "max time (truncated)"
+      ]
+    }
+  ],
+  "mean_reward": -12.75875728428364,
+  "std_reward": 2.28728213550483,
+  "mean_steps": 2000.0
+}

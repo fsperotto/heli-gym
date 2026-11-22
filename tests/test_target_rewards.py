@@ -30,6 +30,27 @@ class TargetRewardTests(unittest.TestCase):
         env.heli_dyn.state["pqr"][2] = -.2
         np.testing.assert_allclose(env._task_observation()[5:], [38., 19., -.5])
 
+    def test_success_checks_physical_tolerances_per_target(self):
+        env = heligym.ApproximateTargetValues(render_mode=None, wind_enabled=False,
+                                              yaw_turn_seconds=30)
+        self.addCleanup(env.close)
+        env.reset(seed=42)
+        env.set_target(dict(north_loc=0., east_loc=0., sea_alt=100.,
+                            forward_speed=0., heading=0., yaw_rotation_velocity=0.))
+        state = env.heli_dyn.state
+        state["xyz"][:] = [12., 12., -109.]
+        state["uvw"][:] = [4., 0., 0.]
+        state["euler"][2] = np.deg2rad(4.)
+        state["pqr"][2] = np.deg2rad(11.)
+        self.assertTrue(env._calculate_reward()[1])
+        for key, index, value in (("xyz", 0, 17.), ("xyz", 2, -111.),
+                                  ("uvw", 0, 6.), ("euler", 2, np.deg2rad(6.)),
+                                  ("pqr", 2, np.deg2rad(13.))):
+            original = state[key][index]
+            state[key][index] = value
+            self.assertFalse(env._calculate_reward()[1])
+            state[key][index] = original
+
     def test_fixed_forward_flight_tracks_signed_u_and_altitude_only(self):
         wrapped = gym.make("HeliForwardFlight-v0", render_mode=None, wind_enabled=False,
                            target_altitude=1500., target_forward_speed=30.)

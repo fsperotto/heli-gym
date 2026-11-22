@@ -1,0 +1,29 @@
+{
+  "task": "hover",
+  "heli_name": "aw109",
+  "episode_seconds": 40.0,
+  "flip_angle": null,
+  "continual": false,
+  "random_wind": false,
+  "wind_speed": null,
+  "wind_direction": null,
+  "turbulence_level": null,
+  "smoothness_weight": 0.25,
+  "algorithm": "ppo",
+  "no_wind": false,
+  "learning_rate": 0.00017921274495179336,
+  "gamma": 0.997,
+  "gae_lambda": 0.9752206273368081,
+  "clip_range": 0.19348976764101813,
+  "n_epochs": 10,
+  "ent_coef": null,
+  "vf_coef": 0.5,
+  "max_grad_norm": 0.5,
+  "net_arch": [
+    256,
+    256
+  ],
+  "n_steps": 1024,
+  "batch_size": 256,
+  "n_envs": 4
+}

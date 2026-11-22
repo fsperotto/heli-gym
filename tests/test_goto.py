@@ -65,6 +65,11 @@ class GotoTests(unittest.TestCase):
         np.testing.assert_array_equal(info["target_position"], target)
         np.testing.assert_array_equal(observation[17:20], np.zeros(3))
 
+    def test_arrival_uses_separate_horizontal_and_altitude_tolerances(self):
+        self.assertTrue(self.env._waypoint_reached([12., 12., 9.]))
+        self.assertFalse(self.env._waypoint_reached([15., 15., 0.]))
+        self.assertFalse(self.env._waypoint_reached([0., 0., 11.]))
+
     def test_seeded_targets_have_clearance_and_no_speed_constraint(self):
         env = self.env
         first, _ = env.reset(seed=42)
@@ -73,7 +78,7 @@ class GotoTests(unittest.TestCase):
         target = np.array([target["north_loc"], target["east_loc"], target["sea_alt"]])
         np.testing.assert_allclose(first[17:20], initial - target)
         np.testing.assert_array_equal(env.reset(seed=42)[0], first)
-        self.assertGreater(np.linalg.norm(target - initial), env.target_radius)
+        self.assertFalse(env._waypoint_reached(target - initial))
         self.assertTrue(np.all(np.abs(target[:2] - initial[:2]) <= 100.))
         self.assertGreaterEqual(target[2] + 1e-3,
                                 env.heli_dyn.ground_height_at(*target[:2]) + 50.)

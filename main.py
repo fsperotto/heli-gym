@@ -28,8 +28,8 @@ Tasks:
         while minimizing body angular rates.
     stabilize
         Stop linear and angular motion at any position or attitude.
-    smooth-stabilize, smooth-hover
-        Add a weighted mean-square penalty on control changes and magnitudes.
+    smooth-stabilize, smooth-hover, smooth-forward-flight, smooth-goto, smooth-heli
+        Add penalties for control effort, sustained yaw, and excessive roll and pitch.
     goto
         Pursue random waypoints using north/east/altitude differences in the observation.
         Reaching a target draws the next one without ending the episode.
@@ -55,6 +55,14 @@ from zoneinfo import ZoneInfo
 
 
 COMMANDS = ('tune', 'train', 'eval', 'record', 'plot', 'render')
+
+TOLERANCE_OPTIONS = {
+    'horizontal_tolerance': 'horizontal position tolerance in ft (default: 20)',
+    'altitude_tolerance': 'altitude tolerance in ft (default: 10)',
+    'velocity_tolerance': 'tolerance per active body velocity component in ft/s (default: 5)',
+    'heading_tolerance': 'heading tolerance in degrees (default: 5)',
+    'yaw_turn_seconds': 'seconds per revolution at the yaw-rate tolerance (default: aircraft scale)',
+}
 
 
 def log_status(message, end='\n'):
@@ -179,7 +187,8 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
                         help='helicopter configuration name in heligym/envs/config/helis, or path to a YAML configuration (default: aw109)')
     environment.add_argument('--task',
                         choices=['hover', 'smooth-hover', 'forward-flight', 'forward',
-                                 'stabilize', 'smooth-stabilize', 'goto', 'heli'],
+                                 'stabilize', 'smooth-stabilize', 'goto', 'heli',
+                                 'smooth-goto', 'smooth-forward-flight', 'smooth-forward', 'smooth-heli'],
                         default='hover', 
                         help='environment task; forward is an alias for forward-flight (default: hover); see task descriptions above')
     environment.add_argument('--flip-angle', type=float, default=None,
@@ -187,11 +196,13 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     environment.add_argument('--continual', action=argparse.BooleanOptionalAction, default=False,
                              help='draw a new waypoint on arrival in Goto (default: end the episode)')
     environment.add_argument('--smoothness-weight', type=float, default=0.25,
-                             help='nonnegative control penalty weight for smooth-hover and smooth-stabilize (default: 0.25)')
+                             help='nonnegative penalty weight for smooth tasks (default: 0.25)')
     environment.add_argument('--episode-seconds', 
                         type=float, 
                         default=40.0,
                         help='maximum simulated episode duration for training and evaluation, in seconds (default: 40)')
+    for name, description in TOLERANCE_OPTIONS.items():
+        environment.add_argument('--' + name.replace('_', '-'), type=float, help=description)
     wind = environment.add_mutually_exclusive_group()
     wind.add_argument('--wind', dest='no_wind', action='store_false',
                       help='enable steady wind and turbulence, overriding a saved --no-wind setting')
@@ -388,14 +399,14 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     # Reuse the training configuration for independent evaluation, recording, and rendering.
     # Parsing again preserves explicit CLI overrides, including --algorithm.
     saved_settings = args.target_dir / 'arguments.json'
-    if 'tune' not in commands and 'train' not in commands and ('eval' in commands or 'record' in commands
-            or ('render' in commands and not args.manual)) and saved_settings.is_file():
+    replaying = {'eval', 'record', 'render'}.intersection(commands)
+    if replaying and not {'tune', 'train'}.intersection(commands) and saved_settings.is_file():
         config = json.loads(saved_settings.read_text())
         if config.get('flip_angle') is not None and 'flip_angle_reference' not in config:
             config['flip_angle'] = 90 - config['flip_angle']
         run_fields = ('algorithm', 'task', 'heli_name', 'episode_seconds', 'flip_angle', 'smoothness_weight', 'continual',
                       'no_wind', 'random_wind', 'wind_speed', 'wind_direction', 'turbulence_level',
-                      'no_online_normalization', 'seed', 'n_envs')
+                      'no_online_normalization', 'seed', 'n_envs', 'device', 'torch_threads', 'eval_episodes', *TOLERANCE_OPTIONS)
         parser.set_defaults(**{key: config[key] for key in run_fields if key in config and key not in file_defaults})
         args = parser.parse_intermixed_args(argv)
     args.commands = commands
@@ -420,6 +431,10 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
         parser.error('--flip-angle must be finite and between 0 and 180 degrees')
     if not math.isfinite(args.smoothness_weight) or args.smoothness_weight < 0:
         parser.error('--smoothness-weight must be finite and nonnegative')
+    for name in TOLERANCE_OPTIONS:
+        value = getattr(args, name)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            parser.error('--' + name.replace('_', '-') + ' must be positive and finite')
     # These are supplied by the runner, rather than algorithm hyperparameters.
     reserved = {'policy', 'env', 'seed', 'device', 'verbose', 'tensorboard_log'}
     if reserved.intersection(args.algo_kwargs):
@@ -448,7 +463,7 @@ def run_wind(args, seed):
 
 def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
              wind_speed=None, wind_direction=None, turbulence_level=None, monitor=True, flip_angle=None,
-             smoothness_weight=0.25, continual=False):
+             smoothness_weight=0.25, continual=False, tolerances=None):
     """Construct each worker locally so no native objects cross process boundaries."""
     import heligym
     classes = {'hover': heligym.HeliHover, 'forward': heligym.HeliForwardFlight,
@@ -456,14 +471,17 @@ def make_env(task, heli_name, episode_seconds, render_mode=None, no_wind=False,
                'stabilize': heligym.HeliStabilize,
                'smooth-stabilize': heligym.HeliSmoothStabilize,
                'smooth-hover': heligym.HeliSmoothHover, 'goto': heligym.HeliGoto,
-               'heli': heligym.Heli}
+               'heli': heligym.Heli, 'smooth-heli': heligym.HeliSmooth,
+               'smooth-goto': heligym.HeliSmoothGoto,
+               'smooth-forward': heligym.HeliSmoothForwardFlight,
+               'smooth-forward-flight': heligym.HeliSmoothForwardFlight}
     weather = {key: value for key, value in dict(
         wind_speed=wind_speed, wind_direction=wind_direction,
         turbulence_level=turbulence_level).items() if value is not None}
-    task_kwargs = {}
-    if task in ('smooth-hover', 'smooth-stabilize'):
+    task_kwargs = dict(tolerances or {}) if task not in ('heli', 'smooth-heli') else {}
+    if task.startswith('smooth-'):
         task_kwargs['smoothness_weight'] = smoothness_weight
-    if task == 'goto':
+    if task in ('goto', 'smooth-goto'):
         task_kwargs['continual'] = continual
     env = classes[task](heli_name=heli_name, render_mode=render_mode,
                         wind_enabled=not no_wind, flip_angle=flip_angle, **weather, **task_kwargs)
@@ -548,7 +566,9 @@ def run_episode(model, args, normalization_path, seed, render=False, on_step=Non
                           render_mode='human' if render else None, no_wind=args.no_wind,
                           wind_speed=wind_speed, wind_direction=wind_direction,
                           turbulence_level=args.turbulence_level, flip_angle=args.flip_angle,
-                          smoothness_weight=args.smoothness_weight, continual=args.continual)
+                          smoothness_weight=args.smoothness_weight, continual=args.continual,
+                          tolerances={key: getattr(args, key) for key in TOLERANCE_OPTIONS
+                                      if getattr(args, key) is not None})
         if model is None:
             env = factory(monitor=False)
             raw_env = env
@@ -669,14 +689,44 @@ def evaluate(model, args, normalization_path):
     rewards = [episode['reward'] for episode in episodes]
     statistics = dict(episodes=episodes, mean_reward=float(np.mean(rewards)),
                       std_reward=float(np.std(rewards)),
-                      mean_steps=float(np.mean([e['steps'] for e in episodes])))
+                      mean_steps=float(np.mean([e['steps'] for e in episodes])),
+                      settings={key: getattr(args, key) for key in (
+                          'task', 'algorithm', 'episode_seconds', 'no_wind', 'random_wind',
+                          'wind_speed', 'wind_direction', 'turbulence_level')})
     write_json(args.target_dir / 'evaluation.json', statistics)
     print(f"Evaluation: mean return={statistics['mean_reward']:.3f}, "
           f"std={statistics['std_reward']:.3f}")
     return statistics
 
 
-def plot_recording(directory, timestep, action_names, observation_names):
+def plot_title(heading, settings):
+    """Add the episode settings available for a saved plot."""
+    details = []
+    if settings.get('task'):
+        details.append(settings['task'])
+    if settings.get('algorithm'):
+        details.append(settings['algorithm'].upper())
+    if settings.get('episode_seconds') is not None:
+        details.append(f"episode limit {settings['episode_seconds']:g} s")
+
+    weather = []
+    if settings.get('no_wind'):
+        weather.append('Wind off')
+    elif 'no_wind' in settings or any(settings.get(key) is not None for key in (
+            'random_wind', 'wind_speed', 'wind_direction', 'turbulence_level')):
+        speed = settings.get('wind_speed')
+        if settings.get('random_wind'):
+            weather.append(f"Random wind up to {20 if speed is None else speed:g} ft/s")
+        else:
+            weather.append('Wind on' if speed is None else f"Wind {speed:g} ft/s")
+        if settings.get('wind_direction') is not None:
+            weather.append(f"{settings['wind_direction']:g}° from north")
+        if settings.get('turbulence_level') is not None:
+            weather.append(f"turbulence {settings['turbulence_level']}")
+    return '\n'.join([heading, *filter(None, (' · '.join(details), ' · '.join(weather)))])
+
+
+def plot_recording(directory, timestep, action_names, observation_names, settings):
     """Plot the saved control and observation series on a shared time axis."""
     import numpy as np
     from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -702,6 +752,7 @@ def plot_recording(directory, timestep, action_names, observation_names):
         axis.set_visible(False)
     for axis in axes[max(0, count - columns):count]:
         axis.tick_params(labelbottom=True)
+    figure.suptitle(plot_title('Recorded episode', settings))
     figure.supxlabel('Time (s)')
     figure.savefig(directory / 'figure.png', dpi=140)
 
@@ -743,7 +794,7 @@ def record_episode(model, args, normalization_path, seed=None, directory=None):
         write_json(staging / 'summary.json', summary)
         filenames = ['actions.csv', 'observations.csv', 'config.json']
         if args.record_plot:
-            plot_recording(staging, DT, Heli.action_names, Heli.observation_names)
+            plot_recording(staging, DT, Heli.action_names, Heli.observation_names, config)
             filenames.append('figure.png')
         directory.mkdir(parents=True, exist_ok=True)
         if not args.record_plot:
@@ -828,7 +879,9 @@ def train(algorithm, args):
     factory = partial(make_env, args.task, args.heli_name, args.episode_seconds,
                       no_wind=args.no_wind, wind_speed=wind_speed,
                       wind_direction=wind_direction, turbulence_level=args.turbulence_level, flip_angle=args.flip_angle,
-                      smoothness_weight=args.smoothness_weight, continual=args.continual)
+                      smoothness_weight=args.smoothness_weight, continual=args.continual,
+                      tolerances={key: getattr(args, key) for key in TOLERANCE_OPTIONS
+                                  if getattr(args, key) is not None})
     backend = 'subprocess' if args.n_envs > 1 and args.vec_env == 'subproc' else 'sequential'
     with progress(f'Creating {args.n_envs} training environments ({backend})'):
         if args.n_envs > 1 and args.vec_env == 'subproc':
@@ -979,8 +1032,10 @@ def plot_statistics(target_dir):
     if not training_path.is_file() and not evaluation_path.is_file():
         raise FileNotFoundError(f'No saved statistics found in {target_dir.resolve()}; '
                                 'run train or eval first')
+    arguments_path = target_dir / 'arguments.json'
+    settings = json.loads(arguments_path.read_text()) if arguments_path.is_file() else {}
     if training_path.is_file():
-        plot_learning_curves(json.loads(training_path.read_text()), target_dir)
+        plot_learning_curves(json.loads(training_path.read_text()), target_dir, settings)
     if evaluation_path.is_file():
         with progress('Loading Matplotlib for evaluation plots'):
             import matplotlib.pyplot as plt
@@ -994,7 +1049,7 @@ def plot_statistics(target_dir):
             ax.set_ylabel(label)
             ax.grid(axis='y', alpha=0.3)
         axes[-1].set_xlabel('Evaluation episode')
-        fig.suptitle('Evaluation statistics')
+        fig.suptitle(plot_title('Evaluation statistics', statistics.get('settings', settings)))
         fig.tight_layout()
         fig.savefig(target_dir / 'evaluation.png')
         log_status('Displaying evaluation plots; close the plot window to continue.')
@@ -1002,7 +1057,7 @@ def plot_statistics(target_dir):
         plt.close(fig)
 
 
-def plot_learning_curves(episodes, target_dir):
+def plot_learning_curves(episodes, target_dir, settings=None):
     """Save and display learning curves for completed training episodes."""
     if not episodes:
         print('No completed episodes; learning curves are unavailable.')
@@ -1024,7 +1079,7 @@ def plot_learning_curves(episodes, target_dir):
         ax.grid(alpha=0.3)
         ax.legend()
     axes[-1].set_xlabel('Training timesteps')
-    fig.suptitle('Learning curves')
+    fig.suptitle(plot_title('Learning curves', settings or {}))
     fig.tight_layout()
     fig.savefig(target_dir / 'learning_curves.png')
     log_status('Displaying learning curves; close the plot window to continue.')

@@ -5,6 +5,7 @@ import unittest
 
 import numpy as np
 
+from heligym.envs.helicopter import Heli
 from heligym.envs.heli_render import FT2MTR, HeliRender
 
 
@@ -52,7 +53,7 @@ class HeliRenderTests(unittest.TestCase):
         self.renderer.render(self.state, self.observation, self.action, step=42, reward=-2.5)
         expected = np.arange(17, dtype=np.float32)
         expected[7:13] = np.rad2deg(expected[7:13])
-        np.testing.assert_allclose(self.renderer.info_values, expected)
+        np.testing.assert_allclose(self.renderer.info_values[:-1], expected)
         np.testing.assert_array_equal(self.observation, np.arange(17, dtype=np.float32))
         self.assertEqual(
             [label.split()[-1] for label in self.renderer.info_text[7:13]],
@@ -95,6 +96,18 @@ class HeliRenderTests(unittest.TestCase):
         self.renderer.render(self.state, self.observation, self.action,
                              target=target, target_position=target[:3])
         self.native.create_model.assert_called_once()
+
+    def test_all_observations_are_displayed_and_controls_are_distinct(self):
+        target = np.arange(8, dtype=np.float32)
+        previous_action = -self.action
+        self.renderer.render(self.state, self.observation, self.action, target=target,
+                             recent_yaw_turns=-1.25, previous_action=previous_action)
+        values = np.concatenate((self.renderer.info_values[:-1], self.renderer.target_values,
+                                 self.renderer.info_values[-1:], self.renderer.action_values))
+        self.assertEqual(len(values), len(Heli.observation_names))
+        self.assertEqual(values[Heli.observation_names.index("recent_yaw_turns")], -1.25)
+        np.testing.assert_array_equal(values[-4:], previous_action)
+        self.native.set_control_bars.assert_called_once_with(self.action)
 
     def test_gui_indicates_active_pilot(self):
         values = self.renderer.command_values

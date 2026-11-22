@@ -88,7 +88,10 @@ class SmoothTaskTests(unittest.TestCase):
 
     def test_tasks_are_available_through_cli_factory_and_gym(self):
         for name, cls in (('smooth-hover', heligym.HeliSmoothHover),
-                          ('smooth-stabilize', heligym.HeliSmoothStabilize)):
+                          ('smooth-stabilize', heligym.HeliSmoothStabilize),
+                          ('smooth-heli', heligym.HeliSmooth),
+                          ('smooth-goto', heligym.HeliSmoothGoto),
+                          ('smooth-forward-flight', heligym.HeliSmoothForwardFlight)):
             with self.subTest(task=name):
                 self.assertEqual(main.parse_args(['train', '--task', name]).task, name)
                 env = main.make_env(name, 'aw109', 1.0, no_wind=True)
@@ -98,6 +101,37 @@ class SmoothTaskTests(unittest.TestCase):
                     env.close()
                 self.assertEqual(gym.spec(f'{cls.__name__}-v0').entry_point,
                                  f'heligym.envs:{cls.__name__}')
+
+    def test_yaw_and_attitude_penalties_have_quadratic_dead_zones(self):
+        env = heligym.HeliSmooth(render_mode=None, wind_enabled=False, smoothness_weight=1.)
+        self.addCleanup(env.close)
+        env.reset(seed=42)
+        env.heli_dyn.action[:] = 0.
+        env.previous_action[:] = 0.
+        env.heli_dyn.state['euler'][:] = 0.
+        self.assertEqual(env._calculate_reward(), (0., False))
+        for direction in (-1, 1):
+            for factor, expected in ((.9, 0.), (1.5, -.25), (2., -1.)):
+                env.recent_yaw_turns = direction * factor
+                self.assertAlmostEqual(env._calculate_reward()[0], expected)
+            env.recent_yaw_turns = 0.
+            for axis in (0, 1):
+                for factor, expected in ((.9, 0.), (1.5, -.25), (2., -1.)):
+                    env.heli_dyn.state['euler'][axis] = direction * factor * env._safe_attitude[axis]
+                    self.assertAlmostEqual(env._calculate_reward()[0], expected, places=6)
+                env.heli_dyn.state['euler'][axis] = 0.
+
+    def test_smooth_stabilize_uses_yaw_history_for_reward_and_rate_for_success(self):
+        env = heligym.HeliSmoothStabilize(render_mode=None, wind_enabled=False,
+                                           mode="difference", yaw_turn_seconds=30.)
+        self.addCleanup(env.close)
+        env.reset(seed=42)
+        env.heli_dyn.state['uvw'][:] = 0.
+        env.heli_dyn.state['pqr'][2] = 1.
+        env.heli_dyn.action[:] = 0.
+        env.previous_action[:] = 0.
+        env.recent_yaw_turns = .9
+        self.assertEqual(env._calculate_reward(), (0., False))
 
     def test_invalid_weights_are_rejected(self):
         for weight in (-1, np.nan, np.inf):

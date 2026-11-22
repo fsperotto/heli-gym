@@ -1,0 +1,117 @@
+{
+  "episodes": [
+    {
+      "seed": 46,
+      "steps": 502,
+      "reward": -0.9107751406665359,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 47,
+      "steps": 502,
+      "reward": -1.013334103141392,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 48,
+      "steps": 502,
+      "reward": -0.9793303878164018,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 49,
+      "steps": 502,
+      "reward": -0.9736716630098814,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 50,
+      "steps": 502,
+      "reward": -0.9115897265301498,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 51,
+      "steps": 502,
+      "reward": -0.9679156291700561,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 52,
+      "steps": 502,
+      "reward": -0.8806065552387055,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 53,
+      "steps": 502,
+      "reward": -0.934251755820506,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 54,
+      "steps": 502,
+      "reward": -0.9396622837956244,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 55,
+      "steps": 502,
+      "reward": -0.8585633928915279,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    }
+  ],
+  "mean_reward": -0.9369700638080781,
+  "std_reward": 0.045387137892697785,
+  "mean_steps": 502.0,
+  "settings": {
+    "task": "stabilize",
+    "algorithm": "ppo",
+    "episode_seconds": 40.0,
+    "no_wind": false,
+    "random_wind": false,
+    "wind_speed": null,
+    "wind_direction": null,
+    "turbulence_level": null
+  }
+}

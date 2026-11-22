@@ -12,6 +12,7 @@ import main as runner
 ENVIRONMENT_FIELDS = (
     "task", "heli_name", "episode_seconds", "flip_angle", "continual", "random_wind",
     "wind_speed", "wind_direction", "turbulence_level", "smoothness_weight",
+    *runner.TOLERANCE_OPTIONS,
 )
 
 

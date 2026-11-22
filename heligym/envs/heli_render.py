@@ -46,9 +46,9 @@ class HeliRender:
         ]
         self.info_text = [
             "POWER      : %5.2f hp",
-            "LON_VEL    : %5.2f ft/s",
-            "LAT_VEL    : %5.2f ft/s",
-            "DWN_VEL    : %5.2f ft/s",
+            "FWD AIR    : %5.2f ft/s",
+            "RIGHT AIR  : %5.2f ft/s",
+            "DOWN AIR   : %5.2f ft/s",
             "N_VEL      : %5.2f ft/s",
             "E_VEL      : %5.2f ft/s",
             "DES_RATE   : %5.2f ft/s",
@@ -62,6 +62,7 @@ class HeliRender:
             "E_POS      : %5.2f ft",
             "ALT        : %5.2f ft",
             "GR_ALT     : %5.2f ft",
+            "RECENT YAW : %+6.2f turns",
         ]
         self.simulation_text = [
             "FPS        : %3.0f",
@@ -106,14 +107,14 @@ class HeliRender:
             "One change per key press",
         ]
         self.info_id = self.native.create_guiText("Observations", 30.0, 30.0, 250.0, 0.0)
-        self.action_id = self.native.create_guiText("Actions", 300.0, 30.0, 250.0, 0.0)
+        self.action_id = self.native.create_guiText("Previous applied controls", 300.0, 30.0, 250.0, 0.0)
         self.simulation_id = self.native.create_guiText("Simulation", 300.0, 160.0, 250.0, 0.0)
-        self.wind_id = self.native.create_guiText("Wind", 30.0, 370.0, 250.0, 0.0)
+        self.wind_id = self.native.create_guiText("Wind", 30.0, 380.0, 250.0, 0.0)
         self.command_id = self.native.create_guiText(
             "Command Instructions", 570.0, 30.0, 360.0, 0.0
         )
 
-        self.target_id = self.native.create_guiText("Target differences", 30.0, 560.0, 250.0, 0.0)
+        self.target_id = self.native.create_guiText("Target differences", 30.0, 570.0, 250.0, 0.0)
 
         # Reuse these arrays when sending snapshots to the native GUI.
         self.target_values = np.zeros(len(self.target_text), dtype=np.float32)
@@ -131,7 +132,8 @@ class HeliRender:
 
     def render(self, state, observation, action, paused=False, step=0, reward=0.0,
                wind_enabled=False, wind_speed=0.0, wind_direction=0.0,
-               turbulence_level=0, wind_ned=None, target=None, target_position=None, pilot_mode='manual'):
+               turbulence_level=0, wind_ned=None, target=None, target_position=None,
+               pilot_mode='manual', recent_yaw_turns=0.0, previous_action=None):
         """Draw one snapshot without retaining or modifying the environment."""
         if self.is_close():
             self.close()
@@ -164,11 +166,12 @@ class HeliRender:
             self.command_id, self.common_command_rows if pilot_mode == 'agent' else -1)
         self.command_values[0] = float(pilot_mode == 'agent')
         self.native.set_guiText(self.command_id, self.command_text, self.command_values)
-        self.info_values[:] = observation
+        self.info_values[:-1] = observation
+        self.info_values[-1] = recent_yaw_turns
         angular_values = self.info_values[ANGULAR_OBSERVATIONS]
         np.rad2deg(angular_values, out=angular_values)
         self.simulation_values[:] = (self.native.get_fps(), step, reward)
-        self.action_values[:] = action
+        self.action_values[:] = action if previous_action is None else previous_action
         self.wind_values.fill(0.0)
         if wind_enabled:
             vector = np.zeros(3, dtype=np.float32) if wind_ned is None else wind_ned

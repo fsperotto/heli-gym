@@ -1,0 +1,107 @@
+{
+  "episodes": [
+    {
+      "seed": 66,
+      "steps": 502,
+      "reward": -6.724610728890441,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 67,
+      "steps": 502,
+      "reward": -6.6360951525035485,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 68,
+      "steps": 502,
+      "reward": -6.659321426851706,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 69,
+      "steps": 502,
+      "reward": -6.662182977878915,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 70,
+      "steps": 502,
+      "reward": -6.843165794505058,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 71,
+      "steps": 502,
+      "reward": -6.314359037772585,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 72,
+      "steps": 502,
+      "reward": -6.798338052305224,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 73,
+      "steps": 502,
+      "reward": -6.402244734071038,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 74,
+      "steps": 502,
+      "reward": -6.7350154841904395,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    },
+    {
+      "seed": 75,
+      "steps": 502,
+      "reward": -6.1560129632091884,
+      "terminated": true,
+      "truncated": false,
+      "termination_reasons": [
+        "success"
+      ]
+    }
+  ],
+  "mean_reward": -6.593134635217815,
+  "std_reward": 0.21407108090500152,
+  "mean_steps": 502.0
+}

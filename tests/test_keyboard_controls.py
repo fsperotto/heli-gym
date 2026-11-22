@@ -110,6 +110,8 @@ class KeyboardControlsTests(unittest.TestCase):
             target=unittest.mock.ANY,
             target_position=None,
             pilot_mode='manual',
+            recent_yaw_turns=self.env.recent_yaw_turns,
+            previous_action=self.env.previous_action,
         )
 
     def test_demo_keeps_servicing_window_but_skips_physics_while_paused(self):
