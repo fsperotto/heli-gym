@@ -30,6 +30,9 @@ Directory arguments by command:
     replay record  Reads recorded controls from --source-dir and saves to
                    --target-dir/record/. The episode folders must differ.
 
+In a pipeline with train, later commands use the newly trained policy.
+When recording with an existing policy, eval and render share that policy.
+
 Examples:
     python main.py tune --task hover --target-dir runs/hover
     python main.py train eval --target-dir runs/hover --use-tuned
@@ -39,6 +42,7 @@ Examples:
     python main.py train --total-timesteps 128 --n-envs 1 --n-steps 128 --batch-size 64
     python main.py eval plot --target-dir runs/hover
     python main.py record --target-dir runs/hover
+    python main.py record --source-dir pretrained/forward2 --target-dir runs/forward2-recordings
     python main.py replay --source-dir runs/hover/record
     python main.py reload --source-dir runs/hover/record --timestep 157
     python main.py render --target-dir runs/hover
@@ -492,8 +496,8 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
         parser.set_defaults(**{**pretrained_defaults, **file_defaults})
         args = parser.parse_intermixed_args(argv)
     if args.target_dir is None:
-        parser.set_defaults(target_dir=(args.source_dir if recording_policy else None) or default_target)
-        args.target_dir = parser.get_default('target_dir')
+        args.target_dir = (args.source_dir if recording_policy else None) or default_target
+        parser.set_defaults(target_dir=args.target_dir)
     if 'reload' in commands:
         environment_fields = ('seed', 'task', 'heli_name', 'episode_seconds', 'flip_angle',
                               'smoothness_weight', 'continual', 'no_wind', 'random_wind',

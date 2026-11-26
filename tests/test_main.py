@@ -313,9 +313,12 @@ class CheckpointTests(unittest.TestCase):
             config = json.loads(config_path.read_text())
             config['algo_kwargs'] = {'gamma': .9}
             main.write_json(config_path, config)
-            args = main.parse_args(['train', '--pretrained-dir', str(source_dir),
-                                    '--target-dir', str(target_dir), '--task', 'smooth-goto',
-                                    '--gamma', '.997', '--total-timesteps', '4'])
+            options = ['--target-dir', str(target_dir), '--task', 'smooth-goto',
+                       '--gamma', '.997', '--total-timesteps', '4']
+            args = main.parse_args(['train', '--source-dir', str(source_dir), *options])
+            legacy_args = main.parse_args(['train', '--pretrained-dir', str(source_dir), *options])
+            self.assertEqual((args.source_dir, args.pretrained_dir), (source_dir, source_dir))
+            self.assertEqual((legacy_args.source_dir, legacy_args.pretrained_dir), (source_dir, source_dir))
 
             def check_initial_state(model, **kwargs):
                 for name, value in model.policy.state_dict().items():
