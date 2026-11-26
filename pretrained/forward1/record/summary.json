@@ -1,0 +1,12 @@
+{
+  "seed": 72,
+  "steps": 283,
+  "reward": -90.62645249617871,
+  "terminated": true,
+  "truncated": false,
+  "termination_reasons": [
+    "flip"
+  ],
+  "success": false,
+  "duration_seconds": 5.66
+}

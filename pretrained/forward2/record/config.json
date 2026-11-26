@@ -29,7 +29,7 @@
   "total_timesteps": 1000000,
   "n_envs": 23,
   "vec_env": "subproc",
-  "seed": 42,
+  "seed": 55,
   "device": "cuda",
   "torch_threads": 1,
   "verbose": 1,
@@ -70,14 +70,14 @@
   "refinement_seeds": 3,
   "summary_only": false,
   "policy_dir": "pretrained/forward2",
-  "record_seed": 42,
-  "command_line": "python main.py record --full --target-dir pretrained/forward2/ --seed 42",
-  "episode_seed": 42,
+  "record_seed": 55,
+  "command_line": "python main.py record --full --target-dir pretrained/forward2/ --seed 55",
+  "episode_seed": 55,
   "timestep_seconds": 0.02,
   "deterministic": true,
   "control_mode": "agent",
   "model_path": "/home/fperotto/SourceCode/GITHUB/heli-gym/pretrained/forward2/model.zip",
   "normalization_path": "/home/fperotto/SourceCode/GITHUB/heli-gym/pretrained/forward2/vecnormalize.pkl",
   "flip_angle_reference": "upright",
-  "saved_at": "2026-11-26T14:08:40+01:00"
+  "saved_at": "2026-11-26T14:10:37+01:00"
 }
