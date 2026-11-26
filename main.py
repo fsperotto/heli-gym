@@ -2,8 +2,33 @@
 
 Commands run in pipeline order: tune -> train -> eval -> record -> plot -> render. Replay and reload run separately.
 With no command, display help. Select one or more commands to run those stages. eval runs deterministic episodes without a GUI; render shows one episode.
-Standalone eval/record/render load the model and saved run settings from --target-dir;
+Standalone eval/render load the model and saved run settings from --target-dir.
+Record can read a model from --source-dir and save episodes to --target-dir;
 explicit command-line settings override saved settings.
+
+Directory arguments by command:
+    Command        Directory behavior
+    -------------  ------------------------------------------------------------
+    train          Writes the new run to --target-dir. Use --source-dir
+                   (alias --pretrained-dir) to initialize from saved weights
+                   and settings in a different directory.
+    eval           Loads the policy from --target-dir and writes evaluation.json
+                   there.
+    record         Loads the policy from --source-dir and writes to record/
+                   under --target-dir (records/ with --num-records). If only
+                   one directory is given, it serves both roles. Use --full
+                   to save restorable snapshots.
+    plot           Reads saved statistics and writes PNGs in --target-dir.
+    render         Loads the policy from --target-dir. Use --manual to fly
+                   without loading a policy.
+    tune           Saves fresh-policy trials under --target-dir/optuna/.
+                   In tune train, --source-dir applies to training.
+    replay         Reads config.json and actions.csv from --source-dir and
+                   plays the recorded controls.
+    reload         Reads config.json and states.json from --source-dir and
+                   restores the simulator at --timestep.
+    replay record  Reads recorded controls from --source-dir and saves to
+                   --target-dir/record/. The episode folders must differ.
 
 Examples:
     python main.py tune --task hover --target-dir runs/hover
@@ -194,7 +219,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     parameter_source.add_argument('--use-tuned', action='store_true',
                                   help='load final_params.json from <target-dir>/optuna')
     parser.add_argument('--source-dir', type=Path,
-                        help='recording directory for replay or reload')
+                        help='saved policy for train or record, or episode directory for replay or reload')
     parser.add_argument('--timestep', type=nonnegative_int, default=0,
                         help='saved step to reload (default: 0, before the first action)')
     parser.add_argument('--manual', action='store_true',
@@ -272,7 +297,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
                         choices=[0, 1, 2], 
                         default=1,
                         help='algorithm training verbosity: 0 silent, 1 info, 2 debug; runner messages still print (default: 1)')
-    execution.add_argument('--full-state', action='store_true',
+    execution.add_argument('--full-state', '--full', action='store_true',
                         help='record a restorable simulator snapshot at every step')
     execution.add_argument('--num-records', type=positive_int,
                         help='record N episodes under <target-dir>/records with consecutive seeds')
@@ -284,8 +309,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     output = parser.add_argument_group('Artifacts and logging')
     output.add_argument('--target-dir', 
                         type=Path, 
-                        default=Path(f'runs/local-{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}'),
-                        help='run directory for models, settings and statistics; eval/record/plot/render read saved artifacts here (default: runs/local-<timestamp>)')
+                        help='run or output directory; record uses --source-dir if omitted (usual default: runs/local-<timestamp>)')
     tensorboard = output.add_mutually_exclusive_group()
     tensorboard.add_argument('--tensorboard', dest='tensorboard', action='store_true',
                              help='enable training TensorBoard logs in <target-dir>/tensorboard_log')
@@ -295,7 +319,7 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
     output.add_argument('--pretrained-dir', 
                         type=Path, 
                         default=None,
-                        help='initialize training from a saved model and its run settings')
+                        help='backward-compatible alias for --source-dir with train')
     output.add_argument('--n-checkpoints', type=nonnegative_int, default=0,
                         help='number of intermediate model checkpoints before the final save (default: 0); evenly spaced across total timesteps, with up to n-envs - 1 transitions of rounding; capped by available vector steps')
     policy = parser.add_argument_group('Policy and shared optimization settings', description="Applicable constructor settings may be overridden by --algo-kwargs.")
@@ -405,16 +429,19 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
         parser.print_help()
         return args
     commands = [command for command in COMMANDS if command in args.commands]
+    recording_replay = commands == ['record', 'replay']
+    recording_policy = 'record' in commands and 'train' not in commands and not recording_replay
     if 'tune' in commands:
-        parser.set_defaults(task='smooth-hover', device='cpu', n_envs=4, target_dir=None)
+        parser.set_defaults(task='smooth-hover', device='cpu', n_envs=4)
         args = parser.parse_intermixed_args(argv)
-    if args.target_dir is None:
-        parser.set_defaults(target_dir=Path('runs') / args.task)
-        args = parser.parse_intermixed_args(argv)
+        default_target = Path('runs') / args.task
+    else:
+        default_target = Path(f'runs/local-{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}')
+    target_dir = args.target_dir or (args.source_dir if recording_policy else None) or default_target
     parameter_path = args.file_args
     if 'tune' not in commands or after_tune:
         if args.use_tuned or args.tune_dir is not None:
-            parameter_path = (args.tune_dir or args.target_dir / 'optuna') / 'final_params.json'
+            parameter_path = (args.tune_dir or target_dir / 'optuna') / 'final_params.json'
     file_defaults = load_file_args(parser, parameter_path) if parameter_path else {}
     if {'replay', 'reload'}.intersection(commands):
         command = 'reload' if 'reload' in commands else 'replay'
@@ -431,31 +458,42 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
             parser.error(f'--source-dir: no {filename} in {recording_dir}{hint}')
         file_defaults = {**recorded_defaults, **file_defaults}
     pretrained_defaults = {}
-    source_dir = None
+    training_source = None
+    if 'train' in commands:
+        # Either spelling on the command line overrides defaults from a file.
+        source = args.source_dir
+        pretrained = args.pretrained_dir
+        if source is None and pretrained is None:
+            source = file_defaults.get('source_dir')
+            pretrained = file_defaults.get('pretrained_dir')
+        if source is not None and pretrained is not None and source.resolve() != pretrained.resolve():
+            parser.error('--source-dir and --pretrained-dir must refer to the same training source')
+        training_source = source or pretrained
     # Tuning uses fresh policies. A combined command loads the source for training
     # after the tuning phase, together with any exported Optuna settings.
-    if 'train' in commands and ('tune' not in commands or after_tune):
-        source_dir = args.pretrained_dir or file_defaults.get('pretrained_dir')
-        if source_dir is not None:
-            pretrained_defaults = load_file_args(parser, source_dir / 'arguments.json', saved_run=True)
-            if not (source_dir / 'model.zip').is_file():
-                parser.error(f'--pretrained-dir: no model.zip in {source_dir}')
-            # Direct options beat matching entries in the source's algo_kwargs.
-            inherited_kwargs = pretrained_defaults.get('algo_kwargs', {}).copy()
-            options = parser._option_string_actions
-            explicit = {options[name].dest for token in argv
-                        if (name := token.partition('=')[0]) in options}
-            for key in explicit | file_defaults.keys():
-                inherited_kwargs.pop(key, None)
-            if 'policy_kwargs' in inherited_kwargs and 'net_arch' in explicit | file_defaults.keys():
-                policy = inherited_kwargs['policy_kwargs'].copy()
-                policy['net_arch'] = args.net_arch if 'net_arch' in explicit else file_defaults['net_arch']
-                inherited_kwargs['policy_kwargs'] = policy
-            if 'algo_kwargs' in pretrained_defaults:
-                pretrained_defaults['algo_kwargs'] = inherited_kwargs
+    if training_source is not None and ('tune' not in commands or after_tune):
+        pretrained_defaults = load_file_args(parser, training_source / 'arguments.json', saved_run=True)
+        if not (training_source / 'model.zip').is_file():
+            parser.error(f'--source-dir: no model.zip in {training_source}')
+        # Direct options beat matching entries in the source's algo_kwargs.
+        inherited_kwargs = pretrained_defaults.get('algo_kwargs', {}).copy()
+        options = parser._option_string_actions
+        explicit = {options[name].dest for token in argv
+                    if (name := token.partition('=')[0]) in options}
+        for key in explicit | file_defaults.keys():
+            inherited_kwargs.pop(key, None)
+        if 'policy_kwargs' in inherited_kwargs and 'net_arch' in explicit | file_defaults.keys():
+            policy = inherited_kwargs['policy_kwargs'].copy()
+            policy['net_arch'] = args.net_arch if 'net_arch' in explicit else file_defaults['net_arch']
+            inherited_kwargs['policy_kwargs'] = policy
+        if 'algo_kwargs' in pretrained_defaults:
+            pretrained_defaults['algo_kwargs'] = inherited_kwargs
     if pretrained_defaults or file_defaults:
         parser.set_defaults(**{**pretrained_defaults, **file_defaults})
         args = parser.parse_intermixed_args(argv)
+    if args.target_dir is None:
+        parser.set_defaults(target_dir=(args.source_dir if recording_policy else None) or default_target)
+        args.target_dir = parser.get_default('target_dir')
     if 'reload' in commands:
         environment_fields = ('seed', 'task', 'heli_name', 'episode_seconds', 'flip_angle',
                               'smoothness_weight', 'continual', 'no_wind', 'random_wind',
@@ -465,27 +503,27 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
         if changed:
             parser.error('reload requires the recorded environment settings. '
                          'Use replay to change: ' + ', '.join(changed))
-    if source_dir is not None:
-        if args.target_dir.resolve() == source_dir.resolve():
-            parser.error('--target-dir must differ from --pretrained-dir')
+    if training_source is not None:
+        if args.target_dir.resolve() == training_source.resolve():
+            parser.error('--target-dir must differ from --source-dir when training')
         source_algorithm = pretrained_defaults.get('algorithm')
         if source_algorithm and args.algorithm != source_algorithm:
-            parser.error(f'--pretrained-dir contains a {source_algorithm} policy. '
+            parser.error(f'--source-dir contains a {source_algorithm} policy. '
                          f'Training with {args.algorithm} requires a matching source policy')
         if (not args.no_online_normalization and pretrained_defaults.get('no_online_normalization') is False
-                and not (source_dir / 'vecnormalize.pkl').is_file()):
-            parser.error(f'--pretrained-dir: no vecnormalize.pkl in {source_dir} for the normalized policy')
+                and not (training_source / 'vecnormalize.pkl').is_file()):
+            parser.error(f'--source-dir: no vecnormalize.pkl in {training_source} for the normalized policy')
     # Reuse the training configuration for independent evaluation, recording, and rendering.
     # Parsing again preserves explicit CLI overrides, including --algorithm.
-    saved_settings = args.target_dir / 'arguments.json'
-    recording_replay = commands == ['record', 'replay']
+    policy_dir = (args.source_dir or args.target_dir) if recording_policy else args.target_dir
+    saved_settings = policy_dir / 'arguments.json'
     if recording_replay:
         if (args.target_dir / 'record').resolve() == args.source_dir.resolve():
             parser.error('replay record requires a destination different from --source-dir')
         if args.num_records is not None:
             parser.error('replay record takes one recording directory at a time')
     replaying = set() if recording_replay else {'eval', 'record', 'render'}.intersection(commands)
-    if replaying and not {'tune', 'train'}.intersection(commands) and saved_settings.is_file():
+    if replaying and 'train' not in commands and ('tune' not in commands or after_tune) and saved_settings.is_file():
         config = json.loads(saved_settings.read_text())
         if config.get('flip_angle') is not None and 'flip_angle_reference' not in config:
             config['flip_angle'] = 90 - config['flip_angle']
@@ -495,6 +533,11 @@ def parse_args(argv=None, *, help_if_no_command=False, after_tune=False):
         parser.set_defaults(**{key: config[key] for key in run_fields if key in config and key not in file_defaults})
         args = parser.parse_intermixed_args(argv)
     args.commands = commands
+    if 'train' in commands:
+        args.source_dir = args.pretrained_dir = training_source
+    elif recording_policy:
+        args.source_dir = policy_dir
+    args.policy_dir = policy_dir
     if 'tune' in commands and not after_tune:
         if args.algorithm != 'ppo':
             parser.error('tune requires PPO')
@@ -1026,7 +1069,7 @@ def record_episode(model, args, normalization_path, seed=None, directory=None, r
                   for key, value in vars(args).items()}
         config.update(episode_seed=seed, timestep_seconds=DT, deterministic=True,
                       control_mode='agent' if replay_actions is None else 'replay',
-                      model_path=(str((args.target_dir / 'model.zip').resolve())
+                      model_path=(str((args.policy_dir / 'model.zip').resolve())
                                   if replay_actions is None else None),
                       normalization_path=(None if replay_actions is not None or args.no_online_normalization else
                                           str(normalization_path.resolve())),
@@ -1190,11 +1233,11 @@ def train(algorithm, args):
 
 def load_model(algorithm, args):
     """Load a policy for commands that run without training first."""
-    model_path = args.target_dir / 'model.zip'
+    model_path = args.policy_dir / 'model.zip'
     if not model_path.is_file():
         raise FileNotFoundError(f'No saved policy found at {model_path.resolve()}; '
-                                'run train first or select an existing --target-dir')
-    normalization_path = args.target_dir / 'vecnormalize.pkl'
+                                'run train first or select a saved policy directory')
+    normalization_path = args.policy_dir / 'vecnormalize.pkl'
     if not args.no_online_normalization and not normalization_path.is_file():
         raise FileNotFoundError(f'No normalization statistics found at {normalization_path.resolve()}')
     with progress(f'Loading policy from {model_path.resolve()}'):
@@ -1207,6 +1250,8 @@ def print_run_summary(args):
     location = (f'  Source       {args.source_dir}' if {'replay', 'reload'}.intersection(args.commands)
                 else f'  Output       {args.target_dir}')
     lines = ['Run settings', location]
+    if args.policy_dir != args.target_dir:
+        lines.append(f'  Policy       {args.policy_dir}')
     if any(command != 'plot' for command in args.commands):
         wind = 'off' if args.no_wind else 'randomized' if args.random_wind else 'on'
         lines.extend([
@@ -1251,7 +1296,7 @@ def main(argv=None):
         tune(args)
         if args.summary_only or args.commands == ['tune']:
             return
-        if args.use_tuned or args.tune_dir is not None or args.pretrained_dir is not None:
+        if args.use_tuned or args.tune_dir is not None or args.source_dir is not None:
             args = parse_args(argv, after_tune=True)
             if original_command:
                 args.command_line = shlex.join(original_command)
@@ -1277,7 +1322,7 @@ def main(argv=None):
 
     print_run_summary(args)
     model = None
-    normalization_path = args.target_dir / 'vecnormalize.pkl'
+    normalization_path = args.policy_dir / 'vecnormalize.pkl'
     for command in args.commands:
         with progress(f'Running {command} command', multiline=True):
             if command == 'train':

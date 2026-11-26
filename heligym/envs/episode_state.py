@@ -68,7 +68,8 @@ def capture_episode_state(env):
             "rng": wind._rng.bit_generator.state,
         },
         "rng": env.np_random.bit_generator.state,
-        "rng_seed": env.np_random_seed,
+        # Older Gymnasium versions expose the generator but omit its seed metadata.
+        "rng_seed": getattr(env, "np_random_seed", -1),
         "waypoint_rng": env._waypoint_rng.bit_generator.state,
         "target": {key: _array(value) if isinstance(value, np.floating) else value
                    for key, value in env.task_target.items()},
@@ -94,7 +95,8 @@ def restore_episode_state(env, snapshot):
     wind._rng.bit_generator.state = wind_snapshot["rng"]
     env.heli_dyn.set_wind(_restore_array(wind_snapshot["current_ned"]))
     env.np_random.bit_generator.state = snapshot["rng"]
-    env._np_random_seed = snapshot["rng_seed"]
+    if hasattr(env, "_np_random_seed"):
+        env._np_random_seed = snapshot["rng_seed"]
     env._waypoint_rng.bit_generator.state = snapshot["waypoint_rng"]
     env.task_target = {key: _restore_array(value)[()] if isinstance(value, dict) else value
                        for key, value in snapshot["target"].items()}

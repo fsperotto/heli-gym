@@ -32,6 +32,28 @@ python main.py plot --target-dir runs/hover            # plot saved statistics o
 python main.py render --target-dir runs/hover          # one episode in the GUI
 ```
 
+### Directory arguments by command
+
+`--target-dir` selects the run or output folder. `--source-dir` selects a
+saved policy for training or recording, or an episode folder for replay or
+reload. Training also accepts the older spelling `--pretrained-dir`.
+
+| Command | Directory behavior |
+| --- | --- |
+| `train` | Writes the model, run settings, training statistics, and normalization data when enabled to `--target-dir`. With `--source-dir`, initializes the new run from saved weights and uses saved settings as defaults. The two directories must differ. |
+| `eval` | Loads the policy and saved run settings from `--target-dir` and writes `evaluation.json` there. |
+| `record` | Loads the policy, saved run settings, and normalization data when enabled from `--source-dir`. Writes to `<target-dir>/record/` or, with `--num-records`, to numbered folders under `<target-dir>/records/`. If you supply only one directory flag, it serves both roles. Use `--full` to save restorable snapshots. |
+| `plot` | Reads saved training or evaluation statistics from `--target-dir` and writes PNGs there. |
+| `render` | Loads the policy and saved run settings from `--target-dir`. Use `--manual` to fly without loading a policy. |
+| `tune` | Runs trials with fresh policies and saves tuning artifacts under `<target-dir>/optuna/`. In `tune train`, `--source-dir` applies to the training phase. |
+| `replay` | Reads `config.json` and `actions.csv` from `--source-dir` and plays the recorded controls. |
+| `reload` | Reads `config.json` and `states.json` from `--source-dir` and restores the simulator at `--timestep`. |
+| `replay record` | Reads recorded controls from `--source-dir` and saves the episode to `<target-dir>/record/`. The input and output episode folders must differ. |
+
+In a pipeline with `train`, later commands use the newly trained policy. In a
+pipeline with `record` and an existing policy, `eval` and `render` share the
+policy selected for recording.
+
 ### Tune PPO with Optuna
 
 Install Optuna in the same Python environment as HeliGym. Then tune one task and
@@ -83,6 +105,7 @@ run `tune train --use-tuned` in one invocation.
 
 ```bash
 python main.py record --target-dir runs/hover
+python main.py record --full --source-dir pretrained/forward2 --target-dir runs/forward2-recordings
 ```
 
 This runs one deterministic, headless episode using the saved policy and the
@@ -299,7 +322,7 @@ per worker, and `--batch-size` (default 256) must divide the total rollout size
 
 ### Fine-tune a saved policy
 
-Use `--pretrained-dir` with a run or checkpoint directory containing
+Use `--source-dir` (or its alias `--pretrained-dir`) with a run or checkpoint directory containing
 `model.zip` and `arguments.json`. The source supplies the starting policy
 weights, observation normalization statistics (if enabled), and defaults for
 the new run. Explicit CLI options take precedence over settings from
@@ -307,7 +330,7 @@ the new run. Explicit CLI options take precedence over settings from
 run's settings.
 
 ```bash
-python main.py train eval --pretrained-dir pretrained/goto_no_wind \
+python main.py train eval --source-dir pretrained/goto_no_wind \
   --task smooth-goto --continual --smoothness-weight 0.03 \
   --target-dir runs/smooth-goto-finetune --total-timesteps 500000 --device cpu
 ```

@@ -218,6 +218,21 @@ class CommandTests(unittest.TestCase):
         load.assert_called_once()
         self.assertIs(evaluate.call_args.args[0], model)
 
+    def test_record_resolves_policy_and_output_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'policy'
+            target = Path(directory) / 'output'
+            source.mkdir()
+            (source / 'arguments.json').write_text(json.dumps({'task': 'forward', 'seed': 91}))
+            args = main.parse_args(['record', '--source-dir', str(source), '--target-dir', str(target)])
+            self.assertEqual((args.policy_dir, args.target_dir), (source, target))
+            self.assertEqual((args.task, args.seed), ('forward', 91))
+
+            for option in ('--source-dir', '--target-dir'):
+                with self.subTest(option=option):
+                    args = main.parse_args(['record', option, str(source)])
+                    self.assertEqual((args.source_dir, args.target_dir), (source, source))
+
     def test_missing_model_and_statistics_explain_next_step(self):
         with tempfile.TemporaryDirectory() as directory:
             args = main.parse_args(['eval', '--target-dir', directory])
